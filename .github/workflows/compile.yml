@@ -1,0 +1,115 @@
+name: Build Xiaomi SM8250 Kernel with Official KSU & SuSFS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "staging-umi" ]
+  pull_request:
+    branches: [ "staging-umi" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Set up Build Environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
+
+    - name: Download Proton Clang
+      run: |
+        mkdir -p clang
+        cd clang
+        curl -LO https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
+        tar -xzf master.tar.gz --strip-components=1
+        rm master.tar.gz
+        echo "$(pwd)/bin" >> $GITHUB_PATH
+
+    # ==================== 集成官方 KernelSU (使用官方一键配置脚本) ====================
+    - name: Setup Official KernelSU
+      run: |
+        echo "=== 正在拉取官方 KernelSU 源码 ==="
+        # 使用 bash -s main 拉取官方稳定版分支
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+
+    # ==================== 集成 SuSFS 补丁 ====================
+    - name: Setup SuSFS 4.19
+      run: |
+        echo "=== 正在拉取 SuSFS 源码 ==="
+        git clone https://gitlab.com/simplenand/susfs4patch.git susfs_src
+        
+        echo "=== 1. 复制 SuSFS 核心文件到内核源码 ==="
+        cp susfs_src/kernel/include/linux/susfs.h include/linux/
+        cp susfs_src/kernel/fs/susfs.c fs/
+        
+        echo "=== 2. 应用 SuSFS 对内核 4.19 的补丁 ==="
+        cd susfs_src/Kernel_Patches/4.19/
+        # 如果有轻微冲突，|| true 可以防止工作流中断
+        patch -p1 -d ../../../ < 50_add_susfs_in_kernel-4.19.patch || true
+        
+        echo "=== 3. 应用 SuSFS 对官方 KernelSU 的补丁 ==="
+        cd ../../../
+        # 进入官方 KernelSU 的源码目录应用专为其定制的补丁
+        cd drivers/kernelsu/
+        patch -p1 < ../../susfs_src/Plugins/KernelSU/10_add_susfs_in_ksu.patch || true
+        cd ../../
+
+    # ==================== 编译内核并配置参数 ====================
+    - name: Build Kernel
+      env:
+        ARCH: arm64
+        SUBARCH: arm64
+        HEADER_ARCH: arm64
+        CC: clang
+        CLANG_TRIPLE: aarch64-linux-gnu-
+        CROSS_COMPILE: aarch64-linux-gnu-
+        CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      run: |
+        export KBUILD_BUILD_USER="xmanweb"
+        export KBUILD_BUILD_HOST="GitHub-Actions"
+        
+        DEFCONFIG="vendor/lito-perf_defconfig"
+        
+        echo "=== 生成基础 Defconfig ==="
+        make O=out $DEFCONFIG
+        
+        echo "=== 开启官方 KSU 与 SuSFS 必需的内核配置 ==="
+        echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> out/.config
+        echo "CONFIG_KSU=y" >> out/.config
+        echo "CONFIG_SUSFS=y" >> out/.config
+        echo "CONFIG_SUSFS_SUS_PATH=y" >> out/.config
+        echo "CONFIG_SUSFS_SUS_MOUNT=y" >> out/.config
+        echo "CONFIG_SUSFS_TRY_UMOUNT=y" >> out/.config
+        echo "CONFIG_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> out/.config
+        
+        echo "=== 开始编译 ==="
+        make O=out -j$(nproc)
+
+    - name: Check and Prepare Artifact
+      id: check_img
+      run: |
+        # 检查编译产物，并直接将其绝对路径写入 Step 的 Output 中，同时写入 GITHUB_ENV
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            CP_PATH="out/arch/arm64/boot/Image.gz-dtb"
+        elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            CP_PATH="out/arch/arm64/boot/Image.gz"
+        else
+            echo "::error::未找到内核产物 Image.gz 或 Image.gz-dtb，请检查上方编译日志是否报错！"
+            exit 1
+        fi
+        
+        # 确保路径存在并输出
+        echo "Found kernel image at: $CP_PATH"
+        echo "img_path=$CP_PATH" >> $GITHUB_OUTPUT
+
+    - name: Upload Kernel Image Artifact
+      if: success() && steps.check_img.outputs.img_path != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: Xiaomi-SM8250-OfficialKSU-SuSFS-Kernel
+        path: ${{ steps.check_img.outputs.img_path }}
