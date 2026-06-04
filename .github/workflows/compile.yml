@@ -40,8 +40,9 @@ jobs:
     # ==================== 集成 SuSFS 补丁 ====================
     - name: Setup SuSFS 4.19
       run: |
-        echo "=== 正在拉取 SuSFS 源码 ==="
-        git clone https://gitlab.com/simplenand/susfs4patch.git susfs_src
+        echo "=== 正在从 GitHub 镜像拉取 SuSFS 源码 ==="
+        # 使用 GitHub 上的高质量公共镜像，避免 GitLab 匿名拉取失败的问题
+        git clone https://github.com/lo6ah/susfs4patch.git susfs_src
         
         echo "=== 1. 复制 SuSFS 核心文件到内核源码 ==="
         cp susfs_src/kernel/include/linux/susfs.h include/linux/
@@ -49,12 +50,10 @@ jobs:
         
         echo "=== 2. 应用 SuSFS 对内核 4.19 的补丁 ==="
         cd susfs_src/Kernel_Patches/4.19/
-        # 如果有轻微冲突，|| true 可以防止工作流中断
         patch -p1 -d ../../../ < 50_add_susfs_in_kernel-4.19.patch || true
         
         echo "=== 3. 应用 SuSFS 对官方 KernelSU 的补丁 ==="
         cd ../../../
-        # 进入官方 KernelSU 的源码目录应用专为其定制的补丁
         cd drivers/kernelsu/
         patch -p1 < ../../susfs_src/Plugins/KernelSU/10_add_susfs_in_ksu.patch || true
         cd ../../
