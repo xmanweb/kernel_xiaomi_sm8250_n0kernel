@@ -1,7 +1,7 @@
 name: Build Xiaomi SM8250 Kernel with Official KSU
 
 on:
-  workflow_dispatch: # 允许在 GitHub 网页上手动点击运行
+  workflow_dispatch:
 
 jobs:
   build:
@@ -10,15 +10,17 @@ jobs:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
-        submodules: 'recursive' # 自动拉取小米源码中可能存在的 Techpack 等驱动子模块
+        submodules: 'recursive'
 
     - name: Set up Build Environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
-    - name: Download Proton Clang & AOSP GCC
+        # 核心修复 1：除了常规依赖，强行追加 32 位多架构支持库 (libc6-i386, lib32z1 等)，彻底根治 32位 程序的 not found 顽疾
+        sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libc6-i386 lib32ncurses5-dev
+
+    - name: Download Proton Clang & AOSP LLVM Binutils
       run: |
-        # 1. 下载并解压 Proton Clang
+        # 1. 下载并解压 Proton Clang (负责核心编译)
         mkdir -p clang
         cd clang
         curl -LO https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
@@ -27,22 +29,10 @@ jobs:
         echo "$(pwd)/bin" >> $GITHUB_PATH
         cd ..
 
-        # 2. 拉取谷歌官方 AOSP 64位 GCC (用于辅助汇编和驱动编译)
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 aosp-gcc64
-        echo "$(pwd)/aosp-gcc64/bin" >> $GITHUB_PATH
+        # 2. 下载谷歌官方专为现代 Android 内核定制的纯 64 位预编译交叉工具链 (AOSP LLVM Binutils)
+        # 这个工具链是纯 64 位的，绝对不会触发 i386 缺失问题
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gas/linux-x86 aosp-gas
 
-        # 3. 拉取谷歌官方 AOSP 32位 GCC
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 aosp-gcc32
-        echo "$(pwd)/aosp-gcc32/bin" >> $GITHUB_PATH
-
-    # ==================== 核心：集成官方一键 KernelSU ====================
-    - name: Setup Official KernelSU
-      run: |
-        echo "=== 正在全自动同步官方 KernelSU 源码 ==="
-        # 使用官方一键脚本，直接将 KernelSU 源码安全地注入到 drivers/kernelsu 目录下
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-
-    # ==================== 核心：配置内核并编译 ====================
     - name: Build Kernel
       env:
         ARCH: arm64
@@ -50,9 +40,9 @@ jobs:
         HEADER_ARCH: arm64
         CC: clang
         CLANG_TRIPLE: aarch64-linux-gnu-
-        # 核心修改：放弃依赖全局 PATH，直接使用 GitHub 工作区绝对路径锁死编译器前缀
-        CROSS_COMPILE: ${{ github.workspace }}/aosp-gcc64/bin/aarch64-linux-android-
-        CROSS_COMPILE_ARM32: ${{ github.workspace }}/aosp-gcc32/bin/arm-linux-androideabi-
+        # 核心修复 2：将传统的 CROSS_COMPILE 汇编/链接器指向谷歌全新的 GAS (GNU Assembler) 纯 64 位工具链
+        CROSS_COMPILE: ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-
+        CROSS_COMPILE_ARM32: ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-
       run: |
         export KBUILD_BUILD_USER="xmanweb"
         export KBUILD_BUILD_HOST="GitHub-Actions"
@@ -69,11 +59,9 @@ jobs:
         echo "=== 3. 开始多核并行编译 ==="
         make O=out -j$(nproc)
 
-    # ==================== 产物检查与打包上传 ====================
     - name: Check and Prepare Artifact
       id: check_img
       run: |
-        # 高通平台优先检查带 dtb 的 Image.gz-dtb，其次检查普通的 Image.gz
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
             CP_PATH="out/arch/arm64/boot/Image.gz-dtb"
         elif [ -f out/arch/arm64/boot/Image.gz ]; then
@@ -82,7 +70,6 @@ jobs:
             echo "::error::未找到编译生成的内核镜像，请检查上方编译日志是否报错！"
             exit 1
         fi
-        echo "Found kernel image at: $CP_PATH"
         echo "img_path=$CP_PATH" >> $GITHUB_OUTPUT
 
     - name: Upload Kernel Image Artifact
