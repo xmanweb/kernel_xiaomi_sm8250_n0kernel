@@ -41,12 +41,17 @@ jobs:
         CLANG_TRIPLE: aarch64-linux-gnu-
         CROSS_COMPILE: ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-
         CROSS_COMPILE_ARM32: ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-
+        
+        # 核心修复：强行让宿主机工具在编译链接时，使用 Ubuntu 原生的工具链和链接属性，从而完美识别 .relr.dyn
+        HOSTCC: gcc
+        HOSTCXX: g++
+        HOSTCFLAGS: "-O2 -Wall"
+        HOSTLDFLAGS: "-fuse-ld=bfd" # 强制使用系统自带的现代标准 BFD 链接器
       run: |
         export KBUILD_BUILD_USER="xmanweb"
         export KBUILD_BUILD_HOST="GitHub-Actions"
         
         echo "=== 0. 建立软链接以欺骗顽固的高通 Makefile ==="
-        # 由于 aosp-gas 目录内没有 gcc，我们给它软链接一个绝对存在的 clang 二进制，用来通过 Makefile 的 -gcc 存在性检查
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-gcc
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-gcc
         
