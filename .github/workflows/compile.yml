@@ -42,8 +42,9 @@ jobs:
         HEADER_ARCH: arm64
         CC: clang
         CLANG_TRIPLE: aarch64-linux-gnu-
-        CROSS_COMPILE: aarch64-linux-gnu-
-        CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+        # 核心修改：直接将交叉编译器路径指向你刚刚下载解压的 Proton Clang 的 bin 目录下
+        CROSS_COMPILE: ${{ github.workspace }}/clang/bin/aarch64-linux-gnu-
+        CROSS_COMPILE_ARM32: ${{ github.workspace }}/clang/bin/arm-linux-gnueabi-
       run: |
         export KBUILD_BUILD_USER="xmanweb"
         export KBUILD_BUILD_HOST="GitHub-Actions"
