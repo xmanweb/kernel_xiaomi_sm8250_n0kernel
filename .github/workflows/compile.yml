@@ -50,23 +50,20 @@ jobs:
         HEADER_ARCH: arm64
         CC: clang
         CLANG_TRIPLE: aarch64-linux-gnu-
-        # 核心修改：对应刚刚下载的谷歌 AOSP GCC 的前缀
-        CROSS_COMPILE: aarch64-linux-android-
-        CROSS_COMPILE_ARM32: arm-linux-androideabi-
+        # 核心修改：放弃依赖全局 PATH，直接使用 GitHub 工作区绝对路径锁死编译器前缀
+        CROSS_COMPILE: ${{ github.workspace }}/aosp-gcc64/bin/aarch64-linux-android-
+        CROSS_COMPILE_ARM32: ${{ github.workspace }}/aosp-gcc32/bin/arm-linux-androideabi-
       run: |
         export KBUILD_BUILD_USER="xmanweb"
         export KBUILD_BUILD_HOST="GitHub-Actions"
         
-        # 定义小米 SM8250 平台的默认配置文件名
         DEFCONFIG="vendor/lito-perf_defconfig"
         
         echo "=== 1. 生成基础 Defconfig ==="
         make O=out $DEFCONFIG
         
         echo "=== 2. 注入 KernelSU 必需的内核参数 ==="
-        # 追加高通平台打包 dtb 必需的参数
         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> out/.config
-        # 开启 KernelSU 核心开关
         echo "CONFIG_KSU=y" >> out/.config
         
         echo "=== 3. 开始多核并行编译 ==="
