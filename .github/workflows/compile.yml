@@ -39,11 +39,9 @@ jobs:
         HEADER_ARCH: arm64
         CC: clang
         CLANG_TRIPLE: aarch64-linux-gnu-
-        # 使用绝对路径锁死交叉编译器前缀
         CROSS_COMPILE: ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-
         CROSS_COMPILE_ARM32: ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-
         
-        # 保持宿主机标准编译器声明
         HOSTCC: gcc
         HOSTCXX: g++
       run: |
@@ -51,21 +49,24 @@ jobs:
         export KBUILD_BUILD_HOST="GitHub-Actions"
         
         echo "=== 0. 移花接木：强制替换 Clang 内部的老旧链接器 ==="
-        # 彻底粉碎引发 unknown type [0x13] section `.relr.dyn` 的根源
-        # 删掉 Proton Clang 目录下不认识现代 Ubuntu 系统库的旧链接器
         rm -f ${{ github.workspace }}/clang/bin/ld
         rm -f ${{ github.workspace }}/clang/bin/ld.bfd
-        
-        # 将它们软链接到 Ubuntu 宿主机最新、最完美的官方原生链接器上
         ln -sf /usr/bin/ld ${{ github.workspace }}/clang/bin/ld
         ln -sf /usr/bin/ld ${{ github.workspace }}/clang/bin/ld.bfd
         
-        echo "=== 0.5 建立软链接以欺骗顽固的高通 Makefile ==="
-        # 虚构出 -gcc 后缀文件，通过高通 Makefile 对编译器的存在性语法检查
+        echo "=== 0.5 建立软链接以补齐 aosp-gas 缺失的交叉组件 ==="
+        # 1. 欺骗 Makefile 的 GCC 检查
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-gcc
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-gcc
         
-        # 定义小米 SM8250 平台的官方默认配置文件名
+        # 2. 核心修复：补齐 aosp-gas 目录下缺失的 ld 链接器，将其指向 Proton Clang 内部强力的 LLVM 链接器
+        ln -sf ${{ github.workspace }}/clang/bin/ld.lld ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-ld
+        ln -sf ${{ github.workspace }}/clang/bin/ld.lld ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-ld
+        
+        # 3. 顺便补齐可能需要的 objcopy 和 strip 等常用工具，防止后面再次报 not found
+        ln -sf ${{ github.workspace }}/clang/bin/llvm-objcopy ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-objcopy
+        ln -sf ${{ github.workspace }}/clang/bin/llvm-strip ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-strip
+        
         DEFCONFIG="vendor/lito-perf_defconfig"
         
         echo "=== 1. 生成基础 Defconfig 配置文件 ==="
