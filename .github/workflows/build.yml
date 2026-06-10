@@ -5,7 +5,7 @@ on:
     branches: [ "staging-umi" ]
   pull_request:
     branches: [ "staging-umi" ]
-  workflow_dispatch: # 允许手动触发编译
+  workflow_dispatch:
 
 jobs:
   build:
@@ -23,12 +23,20 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc build-essential libelf-dev ccache flex bison libssl-dev libgmp-dev libmpfr-dev libmpc-dev libncurses-dev keyutils
 
-    - name: Download Proton Clang
+    - name: Download Neutron Clang 18
       run: |
-        cd $GITHUB_WORKSPACE
-        echo "Downloading Proton Clang..."
-        # 这是一个极度精简且专为内核优化的工具链，下载速度极快
-        git clone https://github.com/kdrag0n/proton-clang.git --depth=1 toolchain/clang
+        mkdir -p $GITHUB_WORKSPACE/toolchain
+        cd $GITHUB_WORKSPACE/toolchain
+        
+        # 使用 wbt 获取 Neutron Clang 的便捷脚本直接下载自给自足的二进制包
+        echo "Downloading Neutron Clang 18..."
+        curl -Lo antman https://raw.githubusercontent.com/Neutron-Builds/antman/main/antman
+        chmod +x antman
+        ./antman -S
+        
+        # 针对部分需要兼容过往 GCC 汇编的环境，额外补充 gas 依赖（以防万一）
+        echo "Downloading GAS..."
+        git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
 
     - name: Set Environment Variables
       run: |
@@ -36,16 +44,17 @@ jobs:
         echo "SUBARCH=arm64" >> $GITHUB_ENV
         echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
         
-        # 将工具链路径加入环境变量
-        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang/bin"
+        # 将 Neutron Clang 以及汇编链的路径加入环境变量
+        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin"
+        GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
         echo "$CLANG_BIN" >> $GITHUB_PATH
+        echo "$GAS_BIN" >> $GITHUB_PATH
         
-        # Proton Clang 不需要传单独的 CROSS_COMPILE_ARM32，参数非常精简
-        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang" >> $GITHUB_ENV
+        # 设置配合 Neutron Clang 编译的标准 Make 参数
+        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang" >> $GITHUB_ENV
+
     - name: Build Kernel
       run: |
-        # 请根据仓库 arch/arm64/configs/ 下的实际 defconfig 文件名修改下面的 umi_defconfig
-        # 常见命名如: umi_defconfig, vendor/umi_user_defconfig 等
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         
         echo "Configuring kernel with $DEFCONFIG_NAME..."
@@ -70,7 +79,7 @@ jobs:
         fi
 
     - name: Upload Kernel Artifact
-      uses: actions/upload-artifact@v4  # <-- 修复了这里
+      uses: actions/upload-artifact@v4
       with:
         name: Xiaomi-SM8250-Kernel
         path: out/*
