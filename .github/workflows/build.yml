@@ -9,7 +9,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # 升级到 ubuntu-24.04 解决 GLIBC_2.36 / 2.38 缺失问题
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout Kernel Source
@@ -23,21 +24,18 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc build-essential libelf-dev ccache flex bison libssl-dev libgmp-dev libmpfr-dev libmpc-dev libncurses-dev keyutils
 
-    - name: Download Neutron Clang 18
+    - name: Download Neutron Clang
       run: |
         mkdir -p $GITHUB_WORKSPACE/toolchain
         cd $GITHUB_WORKSPACE/toolchain
         
-        # 使用更新后的 Neutron-Toolchains 组织下的 antman 脚本
         echo "Downloading Official Antman Script..."
         curl -Lo antman https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
         chmod +x antman
         
-        # 运行 antman 脚本，它会自动向正确的后端服务同步最新的 Neutron 工具链二进制包
         echo "Syncing Neutron Clang Compiler..."
         ./antman -S
         
-        # 补充安卓平台所需的 gas 汇编链以防缺失
         echo "Downloading GAS..."
         git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
 
@@ -47,16 +45,15 @@ jobs:
         echo "SUBARCH=arm64" >> $GITHUB_ENV
         echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
         
-        # antman 执行完成后的默认解压路径是其同级目录下的 bin 文件夹
         CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin"
         GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
         
         echo "$CLANG_BIN" >> $GITHUB_PATH
         echo "$GAS_BIN" >> $GITHUB_PATH
         
-        # 设置对应的编译全局变量
-        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang" >> $GITHUB_ENV
-        
+        # 传递 LLVM=1 以及完整的跨平台前缀，让内核 Makefile 自动调用 Neutron 内置的完美兼容版 LLD 链接器
+        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1" >> $GITHUB_ENV
+
     - name: Build Kernel
       run: |
         DEFCONFIG_NAME="vendor/umi_defconfig" 
