@@ -28,9 +28,13 @@ jobs:
         mkdir -p $GITHUB_WORKSPACE/toolchain
         cd $GITHUB_WORKSPACE/toolchain
         
-        # 直接克隆 Neutron Clang 的最新稳定版本（包含 LLVM 18/19 编译组件）
-        echo "Downloading Neutron Clang..."
-        git clone https://gitlab.com/Neutron-Builds/neutron-clang.git --depth=1 bin
+        # 从 GitHub 镜像直接下载编译好的二进制包 (以目前稳定的版本为例)
+        echo "Downloading Neutron Clang from GitHub Release..."
+        wget -q https://github.com/Neutron-Builds/neutron-clang/releases/latest/download/neutron-clang.tar.zst || wget -q https://github.com/Neutron-Builds/neutron-clang/releases/download/v18.0.0/neutron-clang.tar.zst
+        
+        # 解压（Ubuntu 22.04 自带 zstd 支持）
+        mkdir -p clang
+        tar -I zstd -xf neutron-clang.tar.zst -C clang/
         
         # 下载 GAS 辅助汇编链
         echo "Downloading GAS..."
@@ -42,8 +46,8 @@ jobs:
         echo "SUBARCH=arm64" >> $GITHUB_ENV
         echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
         
-        # 确保路径准确指向 Neutron Clang 的 bin 目录
-        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin/bin"
+        # 指向解压后的 bin 目录
+        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang/bin"
         GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
         
         echo "$CLANG_BIN" >> $GITHUB_PATH
