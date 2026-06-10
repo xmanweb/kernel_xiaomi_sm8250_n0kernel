@@ -1,7 +1,7 @@
-name: Build Xiaomi SM8250 Kernel with Official KSU
+name: Build Pure Xiaomi SM8250 Kernel
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许在 GitHub 网页上直接手动点击运行
 
 jobs:
   build:
@@ -10,16 +10,17 @@ jobs:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
-        submodules: 'recursive'
+        submodules: 'recursive' # 自动拉取小米源码中可能存在的驱动子模块
 
     - name: Set up Build Environment
       run: |
         sudo apt-get update
-        # 核心修改：将 lib32ncurses5-dev 修正为现代 Ubuntu 适用的 lib32ncurses-dev
+        # 安装编译高通内核所需的全部宿主机依赖包（已修正现代 Ubuntu 的 ncurses 包名）
         sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libc6-i386 lib32ncurses-dev
+
     - name: Download Proton Clang & AOSP LLVM Binutils
       run: |
-        # 1. 下载并解压 Proton Clang (负责核心编译)
+        # 1. 下载并解压专门针对 Android 4.19 内核优化的 Proton Clang
         mkdir -p clang
         cd clang
         curl -LO https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
@@ -28,8 +29,7 @@ jobs:
         echo "$(pwd)/bin" >> $GITHUB_PATH
         cd ..
 
-        # 2. 下载谷歌官方专为现代 Android 内核定制的纯 64 位预编译交叉工具链 (AOSP LLVM Binutils)
-        # 这个工具链是纯 64 位的，绝对不会触发 i386 缺失问题
+        # 2. 下载谷歌官方纯 64 位的预编译交叉工具链，用于辅助处理汇编和链接
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gas/linux-x86 aosp-gas
 
     - name: Build Kernel
@@ -39,37 +39,39 @@ jobs:
         HEADER_ARCH: arm64
         CC: clang
         CLANG_TRIPLE: aarch64-linux-gnu-
+        # 使用绝对路径锁死交叉编译器前缀
         CROSS_COMPILE: ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-
         CROSS_COMPILE_ARM32: ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-
         
-        # 核心修复：强行让宿主机工具在编译链接时，使用 Ubuntu 原生的工具链和链接属性，从而完美识别 .relr.dyn
+        # 核心安全锁：强行让宿主机辅助工具使用 Ubuntu 原生的现代工具链，完美识别新版系统的 .relr.dyn 链接格式
         HOSTCC: gcc
         HOSTCXX: g++
         HOSTCFLAGS: "-O2 -Wall"
-        HOSTLDFLAGS: "-fuse-ld=bfd" # 强制使用系统自带的现代标准 BFD 链接器
+        HOSTLDFLAGS: "-fuse-ld=bfd"
       run: |
         export KBUILD_BUILD_USER="xmanweb"
         export KBUILD_BUILD_HOST="GitHub-Actions"
         
-        echo "=== 0. 建立软链接以欺骗顽固的高通 Makefile ==="
+        echo "=== 1. 建立软链接以欺骗顽固的高通 Makefile 语法检查 ==="
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-gcc
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-gcc
         
+        # 定义小米 SM8250 平台的官方默认配置文件名
         DEFCONFIG="vendor/lito-perf_defconfig"
         
-        echo "=== 1. 生成基础 Defconfig ==="
+        echo "=== 2. 生成基础 Defconfig 配置文件 ==="
         make O=out $DEFCONFIG
         
-        echo "=== 2. 注入 KernelSU 必需的内核参数 ==="
+        echo "=== 3. 注入高通平台打包 dtb 必需的参数 ==="
         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> out/.config
-        echo "CONFIG_KSU=y" >> out/.config
         
-        echo "=== 3. 开始多核并行编译 ==="
+        echo "=== 4. 开始多核并行编译纯净内核 ==="
         make O=out -j$(nproc)
 
     - name: Check and Prepare Artifact
       id: check_img
       run: |
+        # 优先检查高通平台标准的带 dtb 的 Image.gz-dtb
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
             CP_PATH="out/arch/arm64/boot/Image.gz-dtb"
         elif [ -f out/arch/arm64/boot/Image.gz ]; then
@@ -78,11 +80,12 @@ jobs:
             echo "::error::未找到编译生成的内核镜像，请检查上方编译日志是否报错！"
             exit 1
         fi
+        echo "成功找到内核产物：$CP_PATH"
         echo "img_path=$CP_PATH" >> $GITHUB_OUTPUT
 
     - name: Upload Kernel Image Artifact
       if: success() && steps.check_img.outputs.img_path != ''
       uses: actions/upload-artifact@v4
       with:
-        name: Xiaomi-SM8250-OfficialKSU-Kernel
+        name: Xiaomi-SM8250-Pure-Kernel
         path: ${{ steps.check_img.outputs.img_path }}
