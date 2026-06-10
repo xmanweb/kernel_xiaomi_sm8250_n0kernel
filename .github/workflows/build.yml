@@ -80,7 +80,7 @@ jobs:
         fi
 
     - name: Upload Kernel Artifact
-      uses: actions/artifacts@v4
+      uses: actions/upload-artifact@v4  # <-- 修复了这里
       with:
         name: Xiaomi-SM8250-Kernel
         path: out/*
