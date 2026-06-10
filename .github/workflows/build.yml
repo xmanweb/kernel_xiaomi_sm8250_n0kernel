@@ -28,13 +28,11 @@ jobs:
         mkdir -p $GITHUB_WORKSPACE/toolchain
         cd $GITHUB_WORKSPACE/toolchain
         
-        # 使用 wbt 获取 Neutron Clang 的便捷脚本直接下载自给自足的二进制包
-        echo "Downloading Neutron Clang 18..."
-        curl -Lo antman https://raw.githubusercontent.com/Neutron-Builds/antman/main/antman
-        chmod +x antman
-        ./antman -S
+        # 直接克隆 Neutron Clang 的最新稳定版本（包含 LLVM 18/19 编译组件）
+        echo "Downloading Neutron Clang..."
+        git clone https://gitlab.com/Neutron-Builds/neutron-clang.git --depth=1 bin
         
-        # 针对部分需要兼容过往 GCC 汇编的环境，额外补充 gas 依赖（以防万一）
+        # 下载 GAS 辅助汇编链
         echo "Downloading GAS..."
         git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
 
@@ -44,15 +42,15 @@ jobs:
         echo "SUBARCH=arm64" >> $GITHUB_ENV
         echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
         
-        # 将 Neutron Clang 以及汇编链的路径加入环境变量
-        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin"
+        # 确保路径准确指向 Neutron Clang 的 bin 目录
+        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin/bin"
         GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
+        
         echo "$CLANG_BIN" >> $GITHUB_PATH
         echo "$GAS_BIN" >> $GITHUB_PATH
         
-        # 设置配合 Neutron Clang 编译的标准 Make 参数
         echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang" >> $GITHUB_ENV
-
+        
     - name: Build Kernel
       run: |
         DEFCONFIG_NAME="vendor/umi_defconfig" 
