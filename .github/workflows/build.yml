@@ -56,6 +56,12 @@ jobs:
 
     - name: Build Kernel
       run: |
+        # 1. 强制清洗导致报错的 MLGO 寄存器分配顾问参数
+        echo "Cleaning up MLGO regalloc advisor arguments from source..."
+        grep -rl "regalloc-" ./ | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' || true
+        grep -rl "regalloc-" ./ | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' || true
+
+        # 2. 设定配置文件
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         
         echo "Configuring kernel with $DEFCONFIG_NAME..."
