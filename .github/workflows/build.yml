@@ -46,7 +46,7 @@ jobs:
       run: |
         # 请根据仓库 arch/arm64/configs/ 下的实际 defconfig 文件名修改下面的 umi_defconfig
         # 常见命名如: umi_defconfig, vendor/umi_user_defconfig 等
-        DEFCONFIG_NAME="umi_defconfig" 
+        DEFCONFIG_NAME="vendor/umi_defconfig" 
         
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
