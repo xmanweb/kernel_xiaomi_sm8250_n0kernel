@@ -28,16 +28,13 @@ jobs:
         mkdir -p $GITHUB_WORKSPACE/toolchain
         cd $GITHUB_WORKSPACE/toolchain
         
-        # 下载 AOSP Clang (以 R11 适用的 Clang 11 为例，可根据项目实际需求调整版本)
+        # 使用 git 浅克隆特定版本的 Clang，避免 wget 链接失效问题（下载较慢但版本标准）
         echo "Downloading AOSP Clang..."
-        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r383902.tar.gz
-        mkdir clang
-        tar -xzf clang-r383902.tar.gz -C clang
+        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --branch=master-kernel clang-llvm
         
-        # 下载 GCC 64位 交叉编译器 (用于汇编/链接辅助)
-        echo "Downloading GCC 64..."
-        git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1
-
+        # 下载 GCC 64位 / 32位 交叉编译器
+        echo "Downloading GCC..."
+        git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
     - name: Set Environment Variables
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
