@@ -55,15 +55,10 @@ jobs:
         ln -sf /usr/bin/ld ${{ github.workspace }}/clang/bin/ld.bfd
         
         echo "=== 0.5 建立软链接以补齐 aosp-gas 缺失的交叉组件 ==="
-        # 1. 欺骗 Makefile 的 GCC 检查
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-gcc
         ln -sf ${{ github.workspace }}/clang/bin/clang ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-gcc
-        
-        # 2. 核心修复：补齐 aosp-gas 目录下缺失的 ld 链接器，将其指向 Proton Clang 内部强力的 LLVM 链接器
         ln -sf ${{ github.workspace }}/clang/bin/ld.lld ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-ld
         ln -sf ${{ github.workspace }}/clang/bin/ld.lld ${{ github.workspace }}/aosp-gas/arm-linux-gnueabi-ld
-        
-        # 3. 顺便补齐可能需要的 objcopy 和 strip 等常用工具，防止后面再次报 not found
         ln -sf ${{ github.workspace }}/clang/bin/llvm-objcopy ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-objcopy
         ln -sf ${{ github.workspace }}/clang/bin/llvm-strip ${{ github.workspace }}/aosp-gas/aarch64-linux-gnu-strip
         
@@ -74,6 +69,10 @@ jobs:
         
         echo "=== 2. 注入高通平台打包 dtb 必需的参数 ==="
         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y" >> out/.config
+        
+        echo "=== 2.5 核心修复：强制应用默认配置，禁止任何交互提问 ==="
+        # 这一步会用默认值自动填满那些引发 Error 询问的无效 symbol（如 CPU_MASK），彻底解决死循环
+        make O=out olddefconfig
         
         echo "=== 3. 开始多核并行编译纯净内核 ==="
         make O=out -j$(nproc)
