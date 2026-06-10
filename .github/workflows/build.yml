@@ -1,0 +1,86 @@
+name: Build Xiaomi SM8250 Kernel
+
+on:
+  push:
+    branches: [ "staging-umi" ]
+  pull_request:
+    branches: [ "staging-umi" ]
+  workflow_dispatch: # 允许手动触发编译
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        ref: staging-umi
+        fetch-depth: 1
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc build-essential libelf-dev ccache flex bison libssl-dev libgmp-dev libmpfr-dev libmpc-dev libncurses-dev keyutils
+
+    - name: Download Toolchains
+      run: |
+        mkdir -p $GITHUB_WORKSPACE/toolchain
+        cd $GITHUB_WORKSPACE/toolchain
+        
+        # 下载 AOSP Clang (以 R11 适用的 Clang 11 为例，可根据项目实际需求调整版本)
+        echo "Downloading AOSP Clang..."
+        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r383902.tar.gz
+        mkdir clang
+        tar -xzf clang-r383902.tar.gz -C clang
+        
+        # 下载 GCC 64位 交叉编译器 (用于汇编/链接辅助)
+        echo "Downloading GCC 64..."
+        git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1
+
+    - name: Set Environment Variables
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
+        
+        # 将工具链路径加入环境变量
+        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang/bin"
+        GCC_BIN="$GITHUB_WORKSPACE/toolchain/linux-x86/any/bin" # 或者是对应的 gas 路径
+        echo "$CLANG_BIN" >> $GITHUB_PATH
+        
+        # 设置编译使用的 Make 参数
+        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+    - name: Build Kernel
+      run: |
+        # 请根据仓库 arch/arm64/configs/ 下的实际 defconfig 文件名修改下面的 umi_defconfig
+        # 常见命名如: umi_defconfig, vendor/umi_user_defconfig 等
+        DEFCONFIG_NAME="umi_defconfig" 
+        
+        echo "Configuring kernel with $DEFCONFIG_NAME..."
+        make $MAKE_ARGS $DEFCONFIG_NAME
+        
+        echo "Starting kernel compilation..."
+        make $MAKE_ARGS -j$(nproc)
+
+    - name: Check Build Output
+      run: |
+        if [ -f arch/arm64/boot/Image.gz-dtb ]; then
+          echo "Kernel compiled successfully!"
+          mkdir -p out/
+          cp arch/arm64/boot/Image.gz-dtb out/
+        elif [ -f arch/arm64/boot/Image ]; then
+          echo "Kernel compiled (Image only)!"
+          mkdir -p out/
+          cp arch/arm64/boot/Image out/
+        else
+          echo "Kernel build failed, output image not found."
+          exit 1
+        fi
+
+    - name: Upload Kernel Artifact
+      uses: actions/artifacts@v4
+      with:
+        name: Xiaomi-SM8250-Kernel
+        path: out/*
