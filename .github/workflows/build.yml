@@ -23,18 +23,25 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc build-essential libelf-dev ccache flex bison libssl-dev libgmp-dev libmpfr-dev libmpc-dev libncurses-dev keyutils
 
-    - name: Download Toolchains
+    - name: Download Proton Clang
       run: |
-        mkdir -p $GITHUB_WORKSPACE/toolchain
-        cd $GITHUB_WORKSPACE/toolchain
+        cd $GITHUB_WORKSPACE
+        echo "Downloading Proton Clang..."
+        # 这是一个极度精简且专为内核优化的工具链，下载速度极快
+        git clone https://github.com/kdrag0n/proton-clang.git --depth=1 toolchain/clang
+
+    - name: Set Environment Variables
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
         
-        # 使用 git 浅克隆特定版本的 Clang，避免 wget 链接失效问题（下载较慢但版本标准）
-        echo "Downloading AOSP Clang..."
-        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1 --branch=master-kernel clang-llvm
+        # 将工具链路径加入环境变量
+        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang/bin"
+        echo "$CLANG_BIN" >> $GITHUB_PATH
         
-        # 下载 GCC 64位 / 32位 交叉编译器
-        echo "Downloading GCC..."
-        git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
+        # Proton Clang 不需要传单独的 CROSS_COMPILE_ARM32，参数非常精简
+        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang" >> $GITHUB_ENV
     - name: Build Kernel
       run: |
         # 请根据仓库 arch/arm64/configs/ 下的实际 defconfig 文件名修改下面的 umi_defconfig
