@@ -28,15 +28,16 @@ jobs:
         mkdir -p $GITHUB_WORKSPACE/toolchain
         cd $GITHUB_WORKSPACE/toolchain
         
-        # 从 GitHub 镜像直接下载编译好的二进制包 (以目前稳定的版本为例)
-        echo "Downloading Neutron Clang from GitHub Release..."
-        wget -q https://github.com/Neutron-Builds/neutron-clang/releases/latest/download/neutron-clang.tar.zst || wget -q https://github.com/Neutron-Builds/neutron-clang/releases/download/v18.0.0/neutron-clang.tar.zst
+        # 使用更新后的 Neutron-Toolchains 组织下的 antman 脚本
+        echo "Downloading Official Antman Script..."
+        curl -Lo antman https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
+        chmod +x antman
         
-        # 解压（Ubuntu 22.04 自带 zstd 支持）
-        mkdir -p clang
-        tar -I zstd -xf neutron-clang.tar.zst -C clang/
+        # 运行 antman 脚本，它会自动向正确的后端服务同步最新的 Neutron 工具链二进制包
+        echo "Syncing Neutron Clang Compiler..."
+        ./antman -S
         
-        # 下载 GAS 辅助汇编链
+        # 补充安卓平台所需的 gas 汇编链以防缺失
         echo "Downloading GAS..."
         git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
 
@@ -46,13 +47,14 @@ jobs:
         echo "SUBARCH=arm64" >> $GITHUB_ENV
         echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
         
-        # 指向解压后的 bin 目录
-        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang/bin"
+        # antman 执行完成后的默认解压路径是其同级目录下的 bin 文件夹
+        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin"
         GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
         
         echo "$CLANG_BIN" >> $GITHUB_PATH
         echo "$GAS_BIN" >> $GITHUB_PATH
         
+        # 设置对应的编译全局变量
         echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang" >> $GITHUB_ENV
         
     - name: Build Kernel
