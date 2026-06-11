@@ -105,10 +105,10 @@ jobs:
           sed -i 's/case LINUX_REBOOT_CMD_RESTART:/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif\n\tcase LINUX_REBOOT_CMD_RESTART:/g' kernel/reboot.c
         fi
 
-        # E. sys_read 钩子注入 (fs/read_write.c) -> 锁定 ksys_read 局部精准注入与参数强转
+        # E. sys_read 钩子注入 (fs/read_write.c) -> 深入 ksys_read 核心语句内部注入，安全闭合
         if [ -f "fs/read_write.c" ]; then
           sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
-          sed -i 's/ssize_t ksys_read(unsigned int fd, char __user \*buf, size_t count)/ssize_t ksys_read(unsigned int fd, char __user \*buf, size_t count)\n{\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, (char __user **)\&buf, \&count);\n#endif/g' fs/read_write.c
+          sed -i 's/struct fd f = fdget_pos(fd);/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, (char __user **)\&buf, \&count);\n#endif\n\tstruct fd f = fdget_pos(fd);/g' fs/read_write.c
         fi
 
         # F. setresuid 核心校验钩子注入 (kernel/sys.c)
