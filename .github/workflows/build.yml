@@ -67,8 +67,9 @@ jobs:
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c 2>/dev/null || sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
           sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
           
-          # 正面解决跨目录链接 undefined symbol 问题
-          echo -e "\n#include <linux/export.h>\nEXPORT_SYMBOL_GPL(write_op);" >> security/selinux/selinuxfs.c
+          # 正面解决跨目录链接 undefined symbol：引入头文件并全局导出
+          sed -i '/#include "security.h"/a #include <linux/export.h>' security/selinux/selinuxfs.c
+          echo -e "\nEXPORT_SYMBOL_GPL(write_op);" >> security/selinux/selinuxfs.c
         fi
 
         if [ -f "security/selinux/hooks.c" ]; then
