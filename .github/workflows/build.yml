@@ -76,11 +76,28 @@ jobs:
 
     - name: Build Kernel
       run: |
-        # 1. 深度清洗陈旧的 MLGO 寄存器分配优化参数
+        # 1. 【核心修复 1】强行在内核核心 Kconfig 里将 KALLSYMS_ALL 设为默认开启
+        echo "Forcing CONFIG_KALLSYMS_ALL inside init/Kconfig..."
+        if [ -f "init/Kconfig" ]; then
+          sed -i '/config KALLSYMS_ALL/,/bool/ {/bool/s/bool.*/bool "EXPORT ALL SYMBOLS" default y/}' init/Kconfig
+        fi
+
+        # 2. 【核心修复 2】针对 ReSukiSU 要求的 sel_handle_status_ops 进行手术级强制导出
+        echo "Forcing export of sel_handle_status_ops in selinuxfs.c..."
+        SELINUX_FILE="security/selinux/selinuxfs.c"
+        if [ -f "$SELINUX_FILE" ]; then
+          echo "" >> "$SELINUX_FILE"
+          echo "/* Added by Actions for ReSukiSU */" >> "$SELINUX_FILE"
+          echo "#include <linux/export.h>" >> "$SELINUX_FILE"
+          echo "extern const struct file_operations sel_handle_status_ops;" >> "$SELINUX_FILE"
+          echo "EXPORT_SYMBOL_GPL(sel_handle_status_ops);" >> "$SELINKS_FILE" || echo "EXPORT_SYMBOL(sel_handle_status_ops);" >> "$SELINUX_FILE"
+        fi
+
+        # 3. 深度清洗陈旧的 MLGO 寄存器分配优化参数
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
-        # 2. 修复相机、显示及无线充驱动在 Clang 18 下的路径寻址
+        # 4. 修复相机、显示及无线充驱动在 Clang 18 下的路径寻址
         find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
           echo "" >> "$mk_file"
           echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
@@ -103,12 +120,12 @@ jobs:
           sed -i 's/#include <idtp9415.h>/#include "idtp9415.h"/g' drivers/power/supply/renesas/idtp9415.c
         fi
 
-        # 3. 释放基础的 defconfig 基础配置
+        # 5. 释放并生成基础的 .config 配置
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        # 4. 【核心改动】使用内核自带的 scripts/config 注入你提供的高级隐藏参数
+        # 6. 使用 scripts/config 动态注入高级参数
         echo "Injecting ReSukiSU and SUSFS advanced features into .config..."
         ./scripts/config --file .config \
             -e KSU \
@@ -126,15 +143,13 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e CONFIG_SUSFS \
             -e CONFIG_SUSFS_SHOW_ROOT_SUS_PATH \
-            -e CONFIG_KALLSYMS_ALL
+            -e CONFIG_KALLSYMS_ALL \
+            -e CONFIG_KALLSYMS
 
-        # 为了防止一些旧内核 Makefile 重新整理配置时覆盖掉参数，顺手也写进 defconfig 做双保险
-        echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/vendor/umi_defconfig
-
-        # 5. 正式动工编译
+        # 7. 正式动工编译
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
-
+        
     - name: Check Build Output
       run: |
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
