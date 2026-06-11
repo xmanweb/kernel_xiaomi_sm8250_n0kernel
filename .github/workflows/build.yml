@@ -1,4 +1,4 @@
-name: Build Xiaomi SM8250 Kernel with ReSukiSU & SUSFS
+name: Build Xiaomi SM8250 Kernel with Pure ReSukiSU (Manual Hooks)
 
 on:
   push:
@@ -36,31 +36,8 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         echo "Integrating Official ReSukiSU..."
-        # 运行官方 setup.sh 脚本拉取 ReSukiSU 源码
+        # 运行官方 setup.sh 脚本拉取自带有全面防护特性的 ReSukiSU 源码
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-
-    - name: Apply SUSFS Patches
-      run: |
-        cd $GITHUB_WORKSPACE
-        echo "Applying SUSFS Patches..."
-        mkdir -p susfs_src
-        cd susfs_src
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git --depth=1
-        cd $GITHUB_WORKSPACE
-        
-        # 拷贝内核 4.19 的标准 SUSFS 核心文件
-        cp susfs_src/susfs4ksu/kernel_patches/fs/susfs.c fs/
-        cp susfs_src/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
-        
-        # 打入内核底层结构体 patch
-        if [ -f "susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" ]; then
-          patch -p1 < susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || echo "Kernel patch warning"
-        fi
-        
-        # 打入与 KSU/ReSukiSU 联动的 patch
-        if [ -f "susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch" ]; then
-          patch -p1 < susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch || echo "KSU patch warning"
-        fi
 
     - name: Set Environment Variables
       run: |
@@ -78,7 +55,7 @@ jobs:
     - name: Build Kernel
       run: |
         # =====================================================================
-        # 1. 【官方规范】静态变量导出（已完美通过，继续保留）
+        # 1. 【官方规范】静态变量导出：解除 SELinux 核心变量与函数的 static 限制
         # =====================================================================
         echo "Applying official ReSukiSU static variable exports..."
         
@@ -98,19 +75,49 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 【精准补全】满足 SuSFS 模式下唯一缺失的 setresuid 核心硬检验
+        # 2. 【指南全套注入】在无外部 SUSFS 时，完整补全全套 Manual 桩点 (单行无折行设计)
         # =====================================================================
-        echo "Injecting mandatory setresuid hook into kernel/sys.c (4.17+ style)..."
-        
-        if [ -f "kernel/sys.c" ]; then
-          # A. 在文件头部区域注入外部函数声明
-          sed -i '/#include <linux\/uidgid.h>/a \#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif' kernel/sys.c
-          
-          # B. 在 __sys_setresuid 函数入口处注入变量处理钩子
-          sed -i 's/long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)/long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)\n{\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif/g' kernel/sys.c
+        echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
+
+        # A. stat 钩子注入 (fs/stat.c)
+        if [ -f "fs/stat.c" ]; then
+          sed -i '/#include <linux\/uaccess.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#endif' fs/stat.c
+          sed -i 's/error = vfs_fstatat/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif\n\terror = vfs_fstatat/g' fs/stat.c
+          sed -i 's/return error;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif\n\treturn error;/g' fs/stat.c
         fi
 
-        # 主 Makefile 作为 ReSukiSU 基础编译入口注入
+        # B. execve 钩子注入 (fs/exec.c)
+        if [ -f "fs/exec.c" ]; then
+          sed -i '/#include <linux\/compiler.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          sed -i 's/struct user_arg_ptr envp = { .ptr.native = __envp };/struct user_arg_ptr envp = { .ptr.native = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
+          sed -i 's/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
+        fi
+
+        # C. faccessat 钩子注入 (fs/open.c)
+        if [ -f "fs/open.c" ]; then
+          sed -i '/#include <linux\/falloc.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
+          sed -i 's/unsigned int lookup_flags = LOOKUP_FOLLOW;/unsigned int lookup_flags = LOOKUP_FOLLOW;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif/g' fs/open.c
+        fi
+
+        # D. sys_reboot 钩子注入 (kernel/reboot.c)
+        if [ -f "kernel/reboot.c" ]; then
+          sed -i '/static DEFINE_MUTEX(reboot_mutex);/i #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
+          sed -i 's/int ret = 0;/int ret = 0;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif/g' kernel/reboot.c
+        fi
+
+        # E. sys_read 钩子注入 (fs/read_write.c)
+        if [ -f "fs/read_write.c" ]; then
+          sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
+          sed -i 's/ssize_t ret = -EBADF;/ssize_t ret = -EBADF;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, \&buf, \&count);\n#endif/g' fs/read_write.c
+        fi
+
+        # F. setresuid 核心硬性校验钩子注入 (kernel/sys.c)
+        if [ -f "kernel/sys.c" ]; then
+          sed -i '/#include <linux\/uidgid.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif' kernel/sys.c
+          sed -i 's/kuid_t kruid, keuid, ksuid;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n\tkuid_t kruid, keuid, ksuid;/g' kernel/sys.c
+        fi
+
+        # 主 Makefile 作为编译入口注入
         if [ -f "Makefile" ]; then
           sed -i '/core-y[[:space:]]*:=/a drivers-y += drivers/kernelsu/' Makefile
         fi
@@ -144,13 +151,13 @@ jobs:
         fi
 
         # =====================================================================
-        # 4. 生成配置并使用 scripts/config 注入全部核心隐藏参数
+        # 4. 生成配置并使用 scripts/config 启用全套 Manual 特性参数
         # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        echo "Injecting ReSukiSU and SUSFS advanced features into .config..."
+        echo "Enabling ReSukiSU Manual Hook features into .config..."
         ./scripts/config --file .config \
             -e KSU \
             -e CONFIG_KSU_MANUAL_HOOK \
@@ -158,26 +165,14 @@ jobs:
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
             -e THREAD_INFO_IN_TASK \
-            -e KSU_SUSFS \
-            -e KSU_SUSFS_SUS_PATH \
-            -e KSU_SUSFS_SUS_MOUNT \
-            -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_SPOOF_UNAME \
-            -e KSU_SUSFS_ENABLE_LOG \
-            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            -e KSU_SUSFS_OPEN_REDIRECT \
-            -e KSU_SUSFS_SUS_MAP \
-            -e KSU_MULTI_MANAGER_SUPPORT \
-            -e CONFIG_SUSFS \
-            -e CONFIG_SUSFS_SHOW_ROOT_SUS_PATH
+            -e KSU_MULTI_MANAGER_SUPPORT
 
         # =====================================================================
-        # 5. 正式启动高标准合规构建
+        # 5. 正式启动纯正 Manual 编译
         # =====================================================================
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
-        
+
     - name: Check Build Output
       run: |
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
@@ -196,5 +191,5 @@ jobs:
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Xiaomi-SM8250-ReSukiSU-SUSFS
+        name: Xiaomi-SM8250-Pure-ReSukiSU
         path: out/*
