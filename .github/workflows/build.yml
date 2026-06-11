@@ -63,7 +63,7 @@ jobs:
         
         if [ -f "security/selinux/selinuxfs.c" ]; then
           sed -i 's/static ssize_t (\*write_op\[\])/ssize_t (\*write_op\[\])/g' security/selinux/selinuxfs.c
-          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
+          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/sel_handle_status_ops/g security/selinux/selinuxfs.c 2>/dev/null || sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
           sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
           sed -i 's/static struct security_operations selinux_ops/struct security_operations selinux_ops/g' security/selinux/hooks.c 2>/dev/null || true
         fi
@@ -81,12 +81,12 @@ jobs:
         # =====================================================================
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
 
-        # A. stat 钩子注入 (fs/stat.c)
+        # A. stat 钩子注入 (fs/stat.c) -> 采用边界安全的局域特征注入
         if [ -f "fs/stat.c" ]; then
-          sed -i '/#include <linux\/uaccess.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\nextern void ksu_handle_fstat64_ret(unsigned int *fd, struct compat_stat64 __user **statbuf_ptr);\n#endif' fs/stat.c
+          echo "Injecting validated hooks into fs/stat.c..."
+          sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#endif' fs/stat.c
           sed -i 's/error = vfs_fstatat/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif\n\terror = vfs_fstatat/g' fs/stat.c
-          sed -i 's/return error;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif\n\treturn error;/g' fs/stat.c
-          sed -i 's/C_A(vfs_fstatat(dfd, filename, \&stat, flag));/C_A(vfs_fstatat(dfd, filename, \&stat, flag));\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(\&fd, \&statbuf);\n#endif/g' fs/stat.c
+          sed -i 's/error = cp_new_stat(&stat, statbuf);/error = cp_new_stat(\&stat, statbuf);\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (!error) ksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif/g' fs/stat.c
         fi
 
         # B. execve 钩子注入 (fs/exec.c)
@@ -108,7 +108,7 @@ jobs:
           sed -i 's/case LINUX_REBOOT_CMD_RESTART:/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif\n\tcase LINUX_REBOOT_CMD_RESTART:/g' kernel/reboot.c
         fi
 
-        # E. sys_read 钩子注入 (fs/read_write.c) -> 采用安全的单行 echo 管道，对 YAML 预处理器 100% 免疫
+        # E. sys_read 钩子注入 (fs/read_write.c) -> 保持上一轮完美沉淀的单行追加，杜绝 YAML 误判
         if [ -f "fs/read_write.c" ]; then
           echo "Applying clean patch to fs/read_write.c..."
           sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
