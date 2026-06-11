@@ -46,7 +46,7 @@ jobs:
         
         # 使用 ReSuKisu 官方/主流社区的集成命令（拉取其特定的源码仓库）
         # 如果你有特定作者的 ReSuKisu 仓库，可以将下方的 URL 替换为你指定的 setup.sh 路径
-        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main 
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash 
         
         # 在配置文件中强制开启 KSU 编译项
         echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/umi_defconfig
@@ -102,17 +102,6 @@ jobs:
 
     - name: Build Kernel
       run: |
-        # 1. 强行绕过 ReSuKisu 的 static_export_check 静态集成校验
-        echo "Bypassing ReSuKisu static export check..."
-        CHECK_MK="drivers/kernelsu/kernel/tools/static_export_check.mk"
-        if [ -f "$CHECK_MK" ]; then
-          # 直接把校验失败触发的 error 这一行用 sed 注释掉，或者让它无条件通过
-          sed -i 's/\$(error /# \$(error /g' "$CHECK_MK"
-        fi
-        # 以防路径不同，深度搜索可能存在的同名校验文件
-        find . -type f -name "static_export_check.mk" | while read -r mk; do
-          sed -i 's/\$(error /# \$(error /g' "$mk"
-        done
 
         # 2. 深度清洗导致先前中断的 MLGO 寄存器分配顾问参数
         echo "Cleaning up MLGO regalloc advisor arguments from source..."
