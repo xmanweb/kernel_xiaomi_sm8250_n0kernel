@@ -36,7 +36,6 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         echo "Integrating Official ReSukiSU..."
-        # 运行官方 setup.sh 脚本拉取自带有全面防护特性的 ReSukiSU 源码
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
     - name: Set Environment Variables
@@ -75,7 +74,7 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 【指南全套注入】在无外部 SUSFS 时，完整补全全套 Manual 桩点 (单行无折行设计)
+        # 2. 【指南全套注入】完整补全全套 Manual 规范桩点 (单行无折行高兼容设计)
         # =====================================================================
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
 
@@ -93,16 +92,16 @@ jobs:
           sed -i 's/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
         fi
 
-        # C. faccessat 钩子注入 (fs/open.c)
+        # C. faccessat 钩子注入 (fs/open.c) -> 适配 4.19 do_faccessat 变量作用域
         if [ -f "fs/open.c" ]; then
           sed -i '/#include <linux\/falloc.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
-          sed -i 's/unsigned int lookup_flags = LOOKUP_FOLLOW;/unsigned int lookup_flags = LOOKUP_FOLLOW;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif/g' fs/open.c
+          sed -i 's/if (mode & ~S_IRWXO)/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, (int *)\&mode, NULL);\n#endif\n\tif (mode \& ~S_IRWXO)/g' fs/open.c
         fi
 
-        # D. sys_reboot 钩子注入 (kernel/reboot.c)
+        # D. sys_reboot 钩子注入 (kernel/reboot.c) -> 强行文件头声明，规避隐式声明警告
         if [ -f "kernel/reboot.c" ]; then
-          sed -i '/static DEFINE_MUTEX(reboot_mutex);/i #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
-          sed -i 's/int ret = 0;/int ret = 0;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif/g' kernel/reboot.c
+          sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
+          sed -i 's/case LINUX_REBOOT_CMD_RESTART:/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif\n\tcase LINUX_REBOOT_CMD_RESTART:/g' kernel/reboot.c
         fi
 
         # E. sys_read 钩子注入 (fs/read_write.c)
@@ -111,7 +110,7 @@ jobs:
           sed -i 's/ssize_t ret = -EBADF;/ssize_t ret = -EBADF;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, \&buf, \&count);\n#endif/g' fs/read_write.c
         fi
 
-        # F. setresuid 核心硬性校验钩子注入 (kernel/sys.c)
+        # F. setresuid 核心校验钩子注入 (kernel/sys.c)
         if [ -f "kernel/sys.c" ]; then
           sed -i '/#include <linux\/uidgid.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif' kernel/sys.c
           sed -i 's/kuid_t kruid, keuid, ksuid;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n\tkuid_t kruid, keuid, ksuid;/g' kernel/sys.c
