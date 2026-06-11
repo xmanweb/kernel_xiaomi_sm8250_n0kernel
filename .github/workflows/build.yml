@@ -63,7 +63,7 @@ jobs:
         
         if [ -f "security/selinux/selinuxfs.c" ]; then
           sed -i 's/static ssize_t (\*write_op\[\])/ssize_t (\*write_op\[\])/g' security/selinux/selinuxfs.c
-          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/sel_handle_status_ops/g security/selinux/selinuxfs.c 2>/dev/null || sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
+          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c 2>/dev/null || sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
           sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
           sed -i 's/static struct security_operations selinux_ops/struct security_operations selinux_ops/g' security/selinux/hooks.c 2>/dev/null || true
         fi
@@ -81,7 +81,7 @@ jobs:
         # =====================================================================
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
 
-        # A. stat 钩子注入 (fs/stat.c) -> 采用边界安全的局域特征注入
+        # A. stat 钩子注入 (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
           echo "Injecting validated hooks into fs/stat.c..."
           sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#endif' fs/stat.c
@@ -89,11 +89,11 @@ jobs:
           sed -i 's/error = cp_new_stat(&stat, statbuf);/error = cp_new_stat(\&stat, statbuf);\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (!error) ksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif/g' fs/stat.c
         fi
 
-        # B. execve 钩子注入 (fs/exec.c)
+        # B. execve 钩子注入 (fs/exec.c) -> 切入内核大动脉，彻底解决宏展开和变量命名变动
         if [ -f "fs/exec.c" ]; then
-          sed -i '/#include <linux\/compiler.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
-          sed -i 's/struct user_arg_ptr envp = { .ptr.native = __envp };/struct user_arg_ptr envp = { .ptr.native = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
-          sed -i 's/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
+          echo "Injecting validated hooks into fs/exec.c..."
+          sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\n#include <linux/binfmts.h>\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          sed -i 's/retval = bprm_mm_init(bprm);/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\n#endif\n\tretval = bprm_mm_init(bprm);/g' fs/exec.c
         fi
 
         # C. faccessat 钩子注入 (fs/open.c)
@@ -108,7 +108,7 @@ jobs:
           sed -i 's/case LINUX_REBOOT_CMD_RESTART:/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif\n\tcase LINUX_REBOOT_CMD_RESTART:/g' kernel/reboot.c
         fi
 
-        # E. sys_read 钩子注入 (fs/read_write.c) -> 保持上一轮完美沉淀的单行追加，杜绝 YAML 误判
+        # E. sys_read 钩子注入 (fs/read_write.c)
         if [ -f "fs/read_write.c" ]; then
           echo "Applying clean patch to fs/read_write.c..."
           sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
