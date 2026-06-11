@@ -36,7 +36,8 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         echo "Integrating Official ReSukiSU..."
-        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+        # 运行官方 setup.sh 脚本拉取 ReSukiSU 源码
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
     - name: Apply SUSFS Patches
       run: |
@@ -51,12 +52,12 @@ jobs:
         cp susfs_src/susfs4ksu/kernel_patches/fs/susfs.c fs/
         cp susfs_src/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
         
-        # 打入底层结构体补丁
+        # 打入内核底层结构体 patch
         if [ -f "susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" ]; then
           patch -p1 < susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || echo "Kernel patch warning"
         fi
         
-        # 打入与 KSU/ReSukiSU 联动的补丁
+        # 打入与 KSU/ReSukiSU 联动的 patch
         if [ -f "susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch" ]; then
           patch -p1 < susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch || echo "KSU patch warning"
         fi
@@ -77,11 +78,10 @@ jobs:
     - name: Build Kernel
       run: |
         # =====================================================================
-        # 1. 【官方规范】第二部分：静态变量导出 (移除 SELinux 核心变量的 static 关键字)
+        # 1. 【官方规范】静态变量导出：解除 SELinux 核心变量与函数的 static 限制
         # =====================================================================
         echo "Applying official ReSukiSU static variable exports..."
         
-        # A. 移除 security/selinux/selinuxfs.c 中的 static write_op 和 static sel_handle_status_ops
         if [ -f "security/selinux/selinuxfs.c" ]; then
           sed -i 's/static ssize_t (\*write_op\[\])/ssize_t (\*write_op\[\])/g' security/selinux/selinuxfs.c
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
@@ -89,7 +89,6 @@ jobs:
           sed -i 's/static struct security_operations selinux_ops/struct security_operations selinux_ops/g' security/selinux/hooks.c 2>/dev/null || true
         fi
 
-        # B. 移除 security/selinux/ss/services.c 中的关键静态锁与静态函数
         if [ -f "security/selinux/ss/services.c" ]; then
           sed -i 's/static struct page \*selinux_status_page;/struct page \*selinux_status_page;/g' security/selinux/ss/services.c
           sed -i 's/static DEFINE_MUTEX(selinux_status_lock);/DEFINE_MUTEX(selinux_status_lock);/g' security/selinux/ss/services.c
@@ -99,68 +98,61 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 【官方规范】第一部分：手动 VFS 钩子注入 (Manual Hooks for 4.19)
+        # 2. 【官方规范】手动 VFS 钩子注入：根据 4.19 内核分支特点精准打桩
         # =====================================================================
         echo "Injecting official ReSukiSU manual hooks into VFS..."
 
         # A. stat hooks (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
-          # 注入函数声明到文件头部附近（以新式包含行为锚点）
           sed -i '/#include <linux\/uaccess.h>/a \
-#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#endif' fs/stat.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#endif' fs/stat.c
           
-          # 注入到 newfstatat 和 fstatat64 中
           sed -i '/int error;\s*error = vfs_fstatat/i #ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif' fs/stat.c
-          
-          # 注入到 newfstat 返回值拦截
           sed -i 's/return error;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif\n\treturn error;/g' fs/stat.c
         fi
 
-        # B. execve hook (fs/exec.c -> 适合 4.19 的 3.14+ 逻辑)
+        # B. execve hook (fs/exec.c -> 3.14+ 逻辑)
         if [ -f "fs/exec.c" ]; then
           sed -i '/#include <linux\/compiler.h>/a \
-#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
           
-          # 注入 do_execve
           sed -i 's/struct user_arg_ptr envp = { .ptr.native = __envp };/struct user_arg_ptr envp = { .ptr.native = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
-          
-          # 注入 compat_do_execve
           sed -i 's/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
         fi
 
-        # C. faccessat hook (fs/open.c -> 适合 4.19- 逻辑)
+        # C. faccessat hook (fs/open.c -> 4.19- 逻辑)
         if [ -f "fs/open.c" ]; then
           sed -i '/#include <linux\/falloc.h>/a \
-#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
           
           sed -i '/unsigned int lookup_flags = LOOKUP_FOLLOW;/a \
-#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif' fs/open.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif' fs/open.c
         fi
 
-        # D. sys_reboot hook (kernel/reboot.c -> 适合 3.11+ 逻辑)
+        # D. sys_reboot hook (kernel/reboot.c -> 3.11+ 逻辑)
         if [ -f "kernel/reboot.c" ]; then
           sed -i '/static DEFINE_MUTEX(reboot_mutex);/i \
-#ifdef CONFIG_KSU_MANUAL_HOOK\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
           
           sed -i '/int ret = 0;/a \
-#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif' kernel/reboot.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif' kernel/reboot.c
         fi
 
-        # E. sys_read hook (fs/read_write.c -> 适合 4.19- 逻辑)
+        # E. sys_read hook (fs/read_write.c -> 4.19- 逻辑)
         if [ -f "fs/read_write.c" ]; then
           sed -i '/#include <linux\/compat.h>/a \
-#ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
+          #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
           
           sed -i 's/ssize_t ret = -EBADF;/ssize_t ret = -EBADF;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, \&buf, \&count);\n#endif/g' fs/read_write.c
         fi
 
-        # 主 Makefile 编译入口注入
+        # F. 主 Makefile 注入校验标记
         if [ -f "Makefile" ]; then
           sed -i '/core-y[[:space:]]*:=/a drivers-y += drivers/kernelsu/' Makefile
         fi
 
         # =====================================================================
-        # 3. 三方驱动清洗与环境修复 (先前积累的优化)
+        # 3. 三方驱动清洗与环境修复 (小米10与Clang18环境专属适配)
         # =====================================================================
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
@@ -188,7 +180,7 @@ jobs:
         fi
 
         # =====================================================================
-        # 4. 释放 Defconfig 并通过 scripts/config 开足隐藏马力
+        # 4. 生成配置并使用 scripts/config 注入全部核心隐藏参数
         # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
@@ -216,10 +208,12 @@ jobs:
             -e CONFIG_SUSFS \
             -e CONFIG_SUSFS_SHOW_ROOT_SUS_PATH
 
-        # 5. 正式启动高标准合规编译
+        # =====================================================================
+        # 5. 正式启动高标准合规构建
+        # =====================================================================
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
-        
+
     - name: Check Build Output
       run: |
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
