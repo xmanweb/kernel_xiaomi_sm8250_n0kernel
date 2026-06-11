@@ -54,17 +54,24 @@ jobs:
     - name: Build Kernel
       run: |
         # 重置可能被脏编译污染的文件，确保基线纯净
-        git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c 2>/dev/null || true
+        git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c security/selinux/selinuxfs.c 2>/dev/null || true
 
         # =====================================================================
-        # 1. 【官方规范】静态变量导出：解除 SELinux 核心变量与函数的 static 限制
+        # 1. 【官方规范】静态变量导出：解除 SELinux 核心变量与函数的 static 限制并做全局导出
         # =====================================================================
         echo "Applying official ReSukiSU static variable exports..."
         
         if [ -f "security/selinux/selinuxfs.c" ]; then
+          echo "Un-staticizing and exporting critical SELinux symbols for ReSukiSU..."
           sed -i 's/static ssize_t (\*write_op\[\])/ssize_t (\*write_op\[\])/g' security/selinux/selinuxfs.c
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c 2>/dev/null || sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
           sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
+          
+          # 正面解决跨目录链接 undefined symbol 问题
+          echo -e "\n#include <linux/export.h>\nEXPORT_SYMBOL_GPL(write_op);" >> security/selinux/selinuxfs.c
+        fi
+
+        if [ -f "security/selinux/hooks.c" ]; then
           sed -i 's/static struct security_operations selinux_ops/struct security_operations selinux_ops/g' security/selinux/hooks.c 2>/dev/null || true
         fi
 
