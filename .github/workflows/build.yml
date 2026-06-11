@@ -46,8 +46,7 @@ jobs:
         
         # 使用 ReSuKisu 官方/主流社区的集成命令（拉取其特定的源码仓库）
         # 如果你有特定作者的 ReSuKisu 仓库，可以将下方的 URL 替换为你指定的 setup.sh 路径
-        curl -LSs "https://raw.githubusercontent.com/wloot/ReSuKisu/main/kernel/setup.sh" | bash -s main || \
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main 
         
         # 在配置文件中强制开启 KSU 编译项
         echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/umi_defconfig
