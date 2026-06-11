@@ -1,4 +1,4 @@
-name: Build Xiaomi SM8250 Kernel
+name: Build Xiaomi SM8250 Kernel with ReSukiSU & SUSFS
 
 on:
   push:
@@ -9,7 +9,6 @@ on:
 
 jobs:
   build:
-    # 升级到 ubuntu-24.04 解决 GLIBC_2.36 / 2.38 缺失问题
     runs-on: ubuntu-24.04
 
     steps:
@@ -28,63 +27,40 @@ jobs:
       run: |
         mkdir -p $GITHUB_WORKSPACE/toolchain
         cd $GITHUB_WORKSPACE/toolchain
-        
-        echo "Downloading Official Antman Script..."
         curl -Lo antman https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
         chmod +x antman
-        
-        echo "Syncing Neutron Clang Compiler..."
         ./antman -S
-        
-        echo "Downloading GAS..."
         git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
 
-    - name: Integrate ReSuKisu
+    - name: Integrate ReSukiSU
       run: |
         cd $GITHUB_WORKSPACE
-        echo "Integrating ReSuKisu (Modified KernelSU)..."
-        
-        # 使用 ReSuKisu 官方/主流社区的集成命令（拉取其特定的源码仓库）
-        # 如果你有特定作者的 ReSuKisu 仓库，可以将下方的 URL 替换为你指定的 setup.sh 路径
-        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash 
-        
-        # 在配置文件中强制开启 KSU 编译项
-        echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/umi_defconfig
+        echo "Integrating Official ReSukiSU..."
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-    - name: Apply SUSFS Patches for ReSuKisu
+    - name: Apply SUSFS Patches
       run: |
         cd $GITHUB_WORKSPACE
-        echo "Applying SUSFS Patches matched for ReSuKisu..."
-        
-        # 1. 自动下载适用于 Kernel 4.19 和 KSU/ReSuKisu 环境的 SUSFS 补丁
-        # 这里使用社区长期维护且完美兼容 4.19 的安全补丁源
+        echo "Applying SUSFS Patches..."
         mkdir -p susfs_src
         cd susfs_src
         git clone https://gitlab.com/simonpunk/susfs4ksu.git --depth=1
         cd $GITHUB_WORKSPACE
         
-        # 2. 将 SUSFS 核心文件复制到内核源码树中
-        echo "Copying SUSFS core files..."
+        # 拷贝内核 4.19 的标准 SUSFS 核心文件
         cp susfs_src/susfs4ksu/kernel_patches/fs/susfs.c fs/
         cp susfs_src/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
         
-        # 3. 打入内核底层 VFS 钩子补丁 (针对 4.19 内核)
-        echo "Patching kernel VFS for SUSFS..."
+        # 打入底层结构体补丁
         if [ -f "susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" ]; then
-          patch -p1 < susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || echo "Kernel patch applied with warnings"
+          patch -p1 < susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || echo "Kernel patch warning"
         fi
         
-        # 4. 打入专为 KSU / ReSuKisu 准备的 SUSFS 联动补丁
-        echo "Patching ReSuKisu for SUSFS cooperation..."
+        # 打入与 KSU/ReSukiSU 联动的补丁
         if [ -f "susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch" ]; then
-          patch -p1 < susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch || echo "KSU patch applied with warnings"
+          patch -p1 < susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch || echo "KSU patch warning"
         fi
-        
-        # 5. 在米10（umi）的 defconfig 中写入 SUSFS 启动标记
-        echo "CONFIG_SUSFS=y" >> arch/arm64/configs/vendor/umi_defconfig
-        echo "CONFIG_SUSFS_SHOW_ROOT_SUS_PATH=y" >> arch/arm64/configs/vendor/umi_defconfig
-        echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/umi_defconfig
-        
+
     - name: Set Environment Variables
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
@@ -93,66 +69,72 @@ jobs:
         
         CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin"
         GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
-        
         echo "$CLANG_BIN" >> $GITHUB_PATH
         echo "$GAS_BIN" >> $GITHUB_PATH
         
-        # 传递 LLVM=1 以及完整的跨平台前缀，让内核 Makefile 自动调用 Neutron 内置的完美兼容版 LLD 链接器
         echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
-
-        # 2. 深度清洗导致先前中断的 MLGO 寄存器分配顾问参数
-        echo "Cleaning up MLGO regalloc advisor arguments from source..."
+        # 1. 深度清洗陈旧的 MLGO 寄存器分配优化参数
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
-        # 3. 彻底修复相机 techpack 的头文件绝对路径丢失问题
-        echo "Fixing techpack camera include paths globally..."
+        # 2. 修复相机、显示及无线充驱动在 Clang 18 下的路径寻址
         find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
           echo "" >> "$mk_file"
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci" >> "$mk_file"
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils" >> "$mk_file"
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io" >> "$mk_file"
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
+          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
         done
 
-        # 4. 修复显示 techpack 在 Clang 18 下的 pll_trace.h 寻址错误
-        echo "Fixing techpack display trace include paths..."
         find techpack/display/ -type f -name "Makefile" | while read -r mk_file; do
           echo "" >> "$mk_file"
-          echo "ccflags-y += -I\$(src)" >> "$mk_file"
-          echo "ccflags-y += -I\$(srctree)/techpack/display/pll" >> "$mk_file"
+          echo "ccflags-y += -I\$(src) -I\$(srctree)/techpack/display/pll" >> "$mk_file"
         done
 
-        # 5. 修复 drivers/hid 驱动在 Clang 18 下的 trace 头文件寻址错误
-        echo "Fixing HID trace include path..."
         if [ -f "drivers/hid/Makefile" ]; then
-          echo "" >> drivers/hid/Makefile
           echo "ccflags-y += -I\$(srctree)/drivers/hid" >> drivers/hid/Makefile
           sed -i 's/CFLAGS_hid-trace.o.*/CFLAGS_hid-trace.o := -I\$(src)/g' drivers/hid/Makefile
         fi
 
-        # 6. 修复 idtp9415 无线充电驱动的尖括号包含错误及编译路径
-        echo "Fixing idtp9415 driver include..."
         if [ -f "drivers/power/supply/renesas/Makefile" ]; then
-          echo "" >> drivers/power/supply/renesas/Makefile
           echo "ccflags-y += -I\$(srctree)/drivers/power/supply/renesas" >> drivers/power/supply/renesas/Makefile
         fi
         if [ -f "drivers/power/supply/renesas/idtp9415.c" ]; then
           sed -i 's/#include <idtp9415.h>/#include "idtp9415.h"/g' drivers/power/supply/renesas/idtp9415.c
         fi
 
-        # 7. 设定配置文件
+        # 3. 释放基础的 defconfig 基础配置
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        # 8. 开始编译
+        # 4. 【核心改动】使用内核自带的 scripts/config 注入你提供的高级隐藏参数
+        echo "Injecting ReSukiSU and SUSFS advanced features into .config..."
+        ./scripts/config --file .config \
+            -e KSU \
+            -e THREAD_INFO_IN_TASK \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -e KSU_MULTI_MANAGER_SUPPORT \
+            -e CONFIG_SUSFS \
+            -e CONFIG_SUSFS_SHOW_ROOT_SUS_PATH \
+            -e CONFIG_KALLSYMS_ALL
+
+        # 为了防止一些旧内核 Makefile 重新整理配置时覆盖掉参数，顺手也写进 defconfig 做双保险
+        echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/vendor/umi_defconfig
+
+        # 5. 正式动工编译
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
-        
+
     - name: Check Build Output
       run: |
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
@@ -171,5 +153,5 @@ jobs:
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Xiaomi-SM8250-Kernel
+        name: Xiaomi-SM8250-ReSukiSU-SUSFS
         path: out/*
