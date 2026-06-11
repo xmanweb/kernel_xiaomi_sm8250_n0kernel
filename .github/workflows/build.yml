@@ -76,22 +76,95 @@ jobs:
 
     - name: Build Kernel
       run: |
-        # 1. 精准导出 ReSukiSU 核心校验要求的 sel_handle_status_ops 符号（修正变量名拼写）
-        echo "Forcing export of sel_handle_status_ops in selinuxfs.c..."
-        SELINUX_FILE="security/selinux/selinuxfs.c"
-        if [ -f "$SELINUX_FILE" ]; then
-          echo "" >> "$SELINUX_FILE"
-          echo "/* Added by Actions for ReSukiSU */" >> "$SELINUX_FILE"
-          echo "#include <linux/export.h>" >> "$SELINUX_FILE"
-          echo "extern const struct file_operations sel_handle_status_ops;" >> "$SELINUX_FILE"
-          echo "EXPORT_SYMBOL(sel_handle_status_ops);" >> "$SELINUX_FILE"
+        # =====================================================================
+        # 1. 【官方规范】第二部分：静态变量导出 (移除 SELinux 核心变量的 static 关键字)
+        # =====================================================================
+        echo "Applying official ReSukiSU static variable exports..."
+        
+        # A. 移除 security/selinux/selinuxfs.c 中的 static write_op 和 static sel_handle_status_ops
+        if [ -f "security/selinux/selinuxfs.c" ]; then
+          sed -i 's/static ssize_t (\*write_op\[\])/ssize_t (\*write_op\[\])/g' security/selinux/selinuxfs.c
+          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
+          sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
+          sed -i 's/static struct security_operations selinux_ops/struct security_operations selinux_ops/g' security/selinux/hooks.c 2>/dev/null || true
         fi
 
-        # 2. 深度清洗陈旧的 MLGO 寄存器分配优化参数
+        # B. 移除 security/selinux/ss/services.c 中的关键静态锁与静态函数
+        if [ -f "security/selinux/ss/services.c" ]; then
+          sed -i 's/static struct page \*selinux_status_page;/struct page \*selinux_status_page;/g' security/selinux/ss/services.c
+          sed -i 's/static DEFINE_MUTEX(selinux_status_lock);/DEFINE_MUTEX(selinux_status_lock);/g' security/selinux/ss/services.c
+          sed -i 's/static DEFINE_RWLOCK(policy_rwlock);/DEFINE_RWLOCK(policy_rwlock);/g' security/selinux/ss/services.c
+          sed -i 's/static void security_dump_masked_av/void security_dump_masked_av/g' security/selinux/ss/services.c
+          sed -i 's/static void context_struct_compute_av/void context_struct_compute_av/g' security/selinux/ss/services.c
+        fi
+
+        # =====================================================================
+        # 2. 【官方规范】第一部分：手动 VFS 钩子注入 (Manual Hooks for 4.19)
+        # =====================================================================
+        echo "Injecting official ReSukiSU manual hooks into VFS..."
+
+        # A. stat hooks (fs/stat.c)
+        if [ -f "fs/stat.c" ]; then
+          # 注入函数声明到文件头部附近（以新式包含行为锚点）
+          sed -i '/#include <linux\/uaccess.h>/a \
+#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#endif' fs/stat.c
+          
+          # 注入到 newfstatat 和 fstatat64 中
+          sed -i '/int error;\s*error = vfs_fstatat/i #ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif' fs/stat.c
+          
+          # 注入到 newfstat 返回值拦截
+          sed -i 's/return error;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif\n\treturn error;/g' fs/stat.c
+        fi
+
+        # B. execve hook (fs/exec.c -> 适合 4.19 的 3.14+ 逻辑)
+        if [ -f "fs/exec.c" ]; then
+          sed -i '/#include <linux\/compiler.h>/a \
+#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          
+          # 注入 do_execve
+          sed -i 's/struct user_arg_ptr envp = { .ptr.native = __envp };/struct user_arg_ptr envp = { .ptr.native = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
+          
+          # 注入 compat_do_execve
+          sed -i 's/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };/struct user_arg_ptr envp = { .is_compat = true, .ptr.compat = __envp };\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/g' fs/exec.c
+        fi
+
+        # C. faccessat hook (fs/open.c -> 适合 4.19- 逻辑)
+        if [ -f "fs/open.c" ]; then
+          sed -i '/#include <linux\/falloc.h>/a \
+#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
+          
+          sed -i '/unsigned int lookup_flags = LOOKUP_FOLLOW;/a \
+#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif' fs/open.c
+        fi
+
+        # D. sys_reboot hook (kernel/reboot.c -> 适合 3.11+ 逻辑)
+        if [ -f "kernel/reboot.c" ]; then
+          sed -i '/static DEFINE_MUTEX(reboot_mutex);/i \
+#ifdef CONFIG_KSU_MANUAL_HOOK\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
+          
+          sed -i '/int ret = 0;/a \
+#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif' kernel/reboot.c
+        fi
+
+        # E. sys_read hook (fs/read_write.c -> 适合 4.19- 逻辑)
+        if [ -f "fs/read_write.c" ]; then
+          sed -i '/#include <linux\/compat.h>/a \
+#ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
+          
+          sed -i 's/ssize_t ret = -EBADF;/ssize_t ret = -EBADF;\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, \&buf, \&count);\n#endif/g' fs/read_write.c
+        fi
+
+        # 主 Makefile 编译入口注入
+        if [ -f "Makefile" ]; then
+          sed -i '/core-y[[:space:]]*:=/a drivers-y += drivers/kernelsu/' Makefile
+        fi
+
+        # =====================================================================
+        # 3. 三方驱动清洗与环境修复 (先前积累的优化)
+        # =====================================================================
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
-        # 3. 修复相机、显示及无线充驱动在 Clang 18 下的路径寻址
         find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
           echo "" >> "$mk_file"
           echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
@@ -114,15 +187,20 @@ jobs:
           sed -i 's/#include <idtp9415.h>/#include "idtp9415.h"/g' drivers/power/supply/renesas/idtp9415.c
         fi
 
-        # 4. 释放并生成基础的 .config 配置
+        # =====================================================================
+        # 4. 释放 Defconfig 并通过 scripts/config 开足隐藏马力
+        # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        # 5. 使用 scripts/config 动态注入你指定的全部高级参数
         echo "Injecting ReSukiSU and SUSFS advanced features into .config..."
         ./scripts/config --file .config \
             -e KSU \
+            -e CONFIG_KSU_MANUAL_HOOK \
+            -e CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
+            -e CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
+            -e CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
             -e THREAD_INFO_IN_TASK \
             -e KSU_SUSFS \
             -e KSU_SUSFS_SUS_PATH \
@@ -138,7 +216,7 @@ jobs:
             -e CONFIG_SUSFS \
             -e CONFIG_SUSFS_SHOW_ROOT_SUS_PATH
 
-        # 6. 正式动工编译
+        # 5. 正式启动高标准合规编译
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
         
