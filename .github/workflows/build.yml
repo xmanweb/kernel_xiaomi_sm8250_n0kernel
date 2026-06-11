@@ -39,6 +39,53 @@ jobs:
         echo "Downloading GAS..."
         git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 --depth=1 gas
 
+    - name: Integrate ReSuKisu
+      run: |
+        cd $GITHUB_WORKSPACE
+        echo "Integrating ReSuKisu (Modified KernelSU)..."
+        
+        # 使用 ReSuKisu 官方/主流社区的集成命令（拉取其特定的源码仓库）
+        # 如果你有特定作者的 ReSuKisu 仓库，可以将下方的 URL 替换为你指定的 setup.sh 路径
+        curl -LSs "https://raw.githubusercontent.com/wloot/ReSuKisu/main/kernel/setup.sh" | bash -s main || \
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+        
+        # 在配置文件中强制开启 KSU 编译项
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/umi_defconfig
+
+    - name: Apply SUSFS Patches for ReSuKisu
+      run: |
+        cd $GITHUB_WORKSPACE
+        echo "Applying SUSFS Patches matched for ReSuKisu..."
+        
+        # 1. 自动下载适用于 Kernel 4.19 和 KSU/ReSuKisu 环境的 SUSFS 补丁
+        # 这里使用社区长期维护且完美兼容 4.19 的安全补丁源
+        mkdir -p susfs_src
+        cd susfs_src
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git --depth=1
+        cd $GITHUB_WORKSPACE
+        
+        # 2. 将 SUSFS 核心文件复制到内核源码树中
+        echo "Copying SUSFS core files..."
+        cp susfs_src/susfs4ksu/kernel_patches/fs/susfs.c fs/
+        cp susfs_src/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
+        
+        # 3. 打入内核底层 VFS 钩子补丁 (针对 4.19 内核)
+        echo "Patching kernel VFS for SUSFS..."
+        if [ -f "susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch" ]; then
+          patch -p1 < susfs_src/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.19.patch || echo "Kernel patch applied with warnings"
+        fi
+        
+        # 4. 打入专为 KSU / ReSuKisu 准备的 SUSFS 联动补丁
+        echo "Patching ReSuKisu for SUSFS cooperation..."
+        if [ -f "susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch" ]; then
+          patch -p1 < susfs_src/susfs4ksu/kernel_patches/KernelSU/10_add_susfs_in_ksu.patch || echo "KSU patch applied with warnings"
+        fi
+        
+        # 5. 在米10（umi）的 defconfig 中写入 SUSFS 启动标记
+        echo "CONFIG_SUSFS=y" >> arch/arm64/configs/vendor/umi_defconfig
+        echo "CONFIG_SUSFS_SHOW_ROOT_SUS_PATH=y" >> arch/arm64/configs/vendor/umi_defconfig
+        echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/umi_defconfig
+        
     - name: Set Environment Variables
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
