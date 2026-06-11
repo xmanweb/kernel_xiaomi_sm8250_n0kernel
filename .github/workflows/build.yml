@@ -61,9 +61,11 @@ jobs:
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
-        # 2. 彻底修复相机 techpack 的头文件绝对路径丢失问题（全目录覆盖）
+        # 2. 彻底修复相机 techpack 的头文件绝对路径丢失问题（修复换行隐患）
         echo "Fixing techpack camera include paths globally..."
         find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
+          # 先强行写入一个空行，防止与 Makefile 末尾原内容粘连
+          echo "" >> "$mk_file"
           echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci" >> "$mk_file"
           echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils" >> "$mk_file"
           echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io" >> "$mk_file"
@@ -74,18 +76,31 @@ jobs:
         echo "Fixing HID trace include path..."
         HID_MAKEFILE="drivers/hid/Makefile"
         if [ -f "$HID_MAKEFILE" ]; then
+          echo "" >> "$HID_MAKEFILE"
           echo "ccflags-y += -I\$(srctree)/drivers/hid" >> "$HID_MAKEFILE"
-          # 针对包含高级 tracepoint 的 C 文件单独注入当前路径提示
           sed -i 's/CFLAGS_hid-trace.o.*/CFLAGS_hid-trace.o := -I\$(src)/g' "$HID_MAKEFILE"
         fi
 
-        # 4. 设定配置文件
+        # 4. 修复 idtp9415 无线充电驱动的尖括号包含错误及编译路径
+        echo "Fixing idtp9415 driver include..."
+        RENESAS_MAKEFILE="drivers/power/supply/renesas/Makefile"
+        if [ -f "$RENESAS_MAKEFILE" ]; then
+          echo "" >> "$RENESAS_MAKEFILE"
+          echo "ccflags-y += -I\$(srctree)/drivers/power/supply/renesas" >> "$RENESAS_MAKEFILE"
+        fi
+        # 顺便把尖括号替换为双引号，双重保险
+        IDT_SRC="drivers/power/supply/renesas/idtp9415.c"
+        if [ -f "$IDT_SRC" ]; then
+          sed -i 's/#include <idtp9415.h>/#include "idtp9415.h"/g' "$IDT_SRC"
+        fi
+
+        # 5. 设定配置文件
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        # 5. 开始编译
+        # 6. 开始编译
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
 
