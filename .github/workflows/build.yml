@@ -78,7 +78,7 @@ jobs:
     - name: Build Kernel
       run: |
         # =====================================================================
-        # 1. 【官方规范】静态变量导出：完美通过第一关，继续保留
+        # 1. 【官方规范】静态变量导出（已完美通过，继续保留）
         # =====================================================================
         echo "Applying official ReSukiSU static variable exports..."
         
@@ -98,11 +98,19 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 【核心调整】不与 SuSFS Inline Hook 冲突，移除 VFS 手动打桩代码
+        # 2. 【精准补全】满足 SuSFS 模式下唯一缺失的 setresuid 核心硬检验
         # =====================================================================
-        echo "Letting ReSukiSU manage hooks via SuSFS Inline hook automatically..."
+        echo "Injecting mandatory setresuid hook into kernel/sys.c (4.17+ style)..."
         
-        # 仅注入主 Makefile 作为 ReSukiSU 的基础编译入口，这是官方强制要求的
+        if [ -f "kernel/sys.c" ]; then
+          # A. 在文件头部区域注入外部函数声明
+          sed -i '/#include <linux\/uidgid.h>/a \#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif' kernel/sys.c
+          
+          # B. 在 __sys_setresuid 函数入口处注入变量处理钩子
+          sed -i 's/long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)/long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)\n{\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif/g' kernel/sys.c
+        fi
+
+        # 主 Makefile 作为 ReSukiSU 基础编译入口注入
         if [ -f "Makefile" ]; then
           sed -i '/core-y[[:space:]]*:=/a drivers-y += drivers/kernelsu/' Makefile
         fi
@@ -145,6 +153,10 @@ jobs:
         echo "Injecting ReSukiSU and SUSFS advanced features into .config..."
         ./scripts/config --file .config \
             -e KSU \
+            -e CONFIG_KSU_MANUAL_HOOK \
+            -e CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
+            -e CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
+            -e CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
             -e THREAD_INFO_IN_TASK \
             -e KSU_SUSFS \
             -e KSU_SUSFS_SUS_PATH \
@@ -165,7 +177,7 @@ jobs:
         # =====================================================================
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
-
+        
     - name: Check Build Output
       run: |
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
