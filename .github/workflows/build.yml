@@ -61,23 +61,31 @@ jobs:
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
-        # 2. 修复相机 techpack 的头文件绝对路径丢失问题
-        echo "Fixing techpack camera include paths for Clang 18..."
-        CAMERA_MAKEFILE="techpack/camera-cas/drivers/cam_sensor_module/Makefile"
-        if [ -f "$CAMERA_MAKEFILE" ]; then
-          # 强行注入当前子模块各目录的相对及绝对搜索路径
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci" >> $CAMERA_MAKEFILE
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils" >> $CAMERA_MAKEFILE
-          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io" >> $CAMERA_MAKEFILE
+        # 2. 彻底修复相机 techpack 的头文件绝对路径丢失问题（全目录覆盖）
+        echo "Fixing techpack camera include paths globally..."
+        find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
+          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci" >> "$mk_file"
+          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils" >> "$mk_file"
+          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io" >> "$mk_file"
+          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
+        done
+
+        # 3. 修复 drivers/hid 驱动在 Clang 18 下的 trace 头文件寻址错误
+        echo "Fixing HID trace include path..."
+        HID_MAKEFILE="drivers/hid/Makefile"
+        if [ -f "$HID_MAKEFILE" ]; then
+          echo "ccflags-y += -I\$(srctree)/drivers/hid" >> "$HID_MAKEFILE"
+          # 针对包含高级 tracepoint 的 C 文件单独注入当前路径提示
+          sed -i 's/CFLAGS_hid-trace.o.*/CFLAGS_hid-trace.o := -I\$(src)/g' "$HID_MAKEFILE"
         fi
 
-        # 3. 设定配置文件
+        # 4. 设定配置文件
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        # 4. 开始编译
+        # 5. 开始编译
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
 
