@@ -1,4 +1,4 @@
-name: Build Xiaomi SM8250 Kernel with Pure ReSukiSU (Manual Hooks)
+name: Build Xiaomi SM8250 Kernel with Pure ReSukiSU & Simonpunk SUSFS v2.1.0
 
 on:
   push:
@@ -38,6 +38,26 @@ jobs:
         echo "Integrating Official ReSukiSU..."
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+    - name: Integrate Simonpunk SUSFS v2.1.0
+      run: |
+        cd $GITHUB_WORKSPACE
+        echo "Cloning official simonpunk/susfs4ksu repository..."
+        # 克隆官方 4.19 内核专用的 susfs 分支
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 --depth=1 susfs_src
+        
+        echo "Copying simonpunk SUSFS core source files..."
+        cp -r susfs_src/kernel/* ./
+        cp susfs_src/include/linux/susfs.h include/linux/
+        
+        echo "Applying simonpunk SUSFS patches to VFS layer..."
+        # 寻找 patches 目录下的标准 4.19 补丁并打入
+        if [ -d "susfs_src/patches" ]; then
+          patch -p1 < susfs_src/patches/50_add_susfs_in_kernel-4.19.patch || echo "Warning: Standard patch returned non-zero, continuous building..."
+        else
+          # 容错处理：寻找根目录下的补丁文件
+          patch -p1 < susfs_src/*.patch || echo "Warning: Root patches returned non-zero, continuous building..."
+        fi
+
     - name: Set Environment Variables
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
@@ -53,18 +73,17 @@ jobs:
 
     - name: Build Kernel
       run: |
-        # 强制复位所有可能被污染的文件（包括之前魔改的 SELinux 目录）
+        # 强制复位基线文件，确保干净织入
         git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c 2>/dev/null || true
         git checkout security/selinux/ 2>/dev/null || true
 
         # =====================================================================
-        # 1. 【指南全套注入】完整补全全套 Manual 规范桩点 (单行无折行高兼容设计)
+        # 1. 【指南全套注入】完整补全全套 Manual 规范桩点
         # =====================================================================
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
 
         # A. stat 钩子注入 (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
-          echo "Injecting full official-compliant 64/32bit hooks into fs/stat.c..."
           sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#ifdef CONFIG_COMPAT\nstruct compat_stat64;\nextern void ksu_handle_fstat64_ret(unsigned int *fd, struct compat_stat64 __user **statbuf_ptr);\n#endif\n#endif' fs/stat.c
           sed -i 's/error = vfs_fstatat/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif\n\terror = vfs_fstatat/g' fs/stat.c
           sed -i 's/error = cp_new_stat(&stat, statbuf);/error = cp_new_stat(\&stat, statbuf);\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (!error) ksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif/g' fs/stat.c
@@ -73,7 +92,6 @@ jobs:
 
         # B. execve 钩子注入 (fs/exec.c)
         if [ -f "fs/exec.c" ]; then
-          echo "Injecting validated hooks into fs/exec.c..."
           sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\n#include <linux/binfmts.h>\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
           sed -i 's/retval = bprm_mm_init(bprm);/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\n#endif\n\tretval = bprm_mm_init(bprm);/g' fs/exec.c
         fi
@@ -92,7 +110,6 @@ jobs:
 
         # E. sys_read 钩子注入 (fs/read_write.c)
         if [ -f "fs/read_write.c" ]; then
-          echo "Applying clean patch to fs/read_write.c..."
           sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
           
           rm -f ksys_read.patch
@@ -118,7 +135,7 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 三方驱动清洗与环境修复 (小米10与Clang18环境专属适配)
+        # 2. 三方驱动清洗与环境修复
         # =====================================================================
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
@@ -146,13 +163,13 @@ jobs:
         fi
 
         # =====================================================================
-        # 3. 生成配置并激活纯 Manual 编译开关（剔除传统 -e KSU 干扰）
+        # 3. 生成配置并激活纯 Manual 模式与官方 simonpunk SUSFS 参数
         # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        echo "Enabling Pure ReSukiSU Manual Hook features into .config..."
+        echo "Enabling Pure ReSukiSU + Simonpunk SUSFS into .config..."
         ./scripts/config --file .config \
             -d KSU \
             -e CONFIG_KSU_MANUAL_HOOK \
@@ -160,7 +177,13 @@ jobs:
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
             -e THREAD_INFO_IN_TASK \
-            -e KSU_MULTI_MANAGER_SUPPORT
+            -e KSU_MULTI_MANAGER_SUPPORT \
+            -e CONFIG_SUSFS \
+            -e CONFIG_SUSFS_SUS_PATH \
+            -e CONFIG_SUSFS_SUS_MOUNT \
+            -e CONFIG_SUSFS_TRY_UMOUNT \
+            -e CONFIG_SUSFS_AUTO_ADD_SUS_MOUNT \
+            -e CONFIG_SUSFS_AUTO_ADD_SUS_PATH
 
         # =====================================================================
         # 4. 正式启动编译
@@ -186,5 +209,5 @@ jobs:
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Xiaomi-SM8250-Pure-ReSukiSU
+        name: Xiaomi-SM8250-ReSukiSU-SimonpunkSUSFS
         path: out/*
