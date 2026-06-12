@@ -93,16 +93,102 @@ jobs:
         git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c 2>/dev/null || true
         git checkout security/selinux/ 2>/dev/null || true
 
+        # =====================================================================
+        # 【全盘彻底清洗】击穿所有 Makefile/Kbuild/配置中的 LLVM 寄存器分配器错误参数
+        # =====================================================================
+        echo "Deep cleaning problematic LLVM regalloc advisor flags across entire tree..."
+        find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.Kbuild" -o -name "*.sh" -o -name "*.conf" \) | while read -r file; do
+          if grep -qE "regalloc-(enable|eviction)-advisor" "$file"; then
+            echo "Cleaning options in: $file"
+            sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' "$file" 2>/dev/null || true
+            sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' "$file" 2>/dev/null || true
+          fi
+        done
+
         # 1. 【指南全套注入】完整补全全套 Manual 规范桩点
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
-        # (此处省略之前已验证成功的全套手动桩点注入代码，保持逻辑一致性不变...)
+        # A. stat 钩子注入 (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
           sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#ifdef CONFIG_COMPAT\nstruct compat_stat64;\nextern void ksu_handle_fstat64_ret(unsigned int *fd, struct compat_stat64 __user **statbuf_ptr);\n#endif\n#endif' fs/stat.c
           sed -i 's/error = vfs_fstatat/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif\n\terror = vfs_fstatat/g' fs/stat.c
+          sed -i 's/error = cp_new_stat(&stat, statbuf);/error = cp_new_stat(\&stat, statbuf);\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (!error) ksu_handle_newfstat_ret(\&fd, \&statbuf);\n#endif/g' fs/stat.c
+          sed -i 's/error = cp_compat_stat64(&stat, statbuf);/error = cp_compat_stat64(\&stat, statbuf);\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (!error) ksu_handle_fstat64_ret(\&fd, (struct compat_stat64 __user **)\&statbuf);\n#endif/g' fs/stat.c
         fi
-        # (假定其余B、C、D、E、F桩点及三方驱动修复均在此处完整运行)
 
+        # B. execve 钩子注入 (fs/exec.c)
+        if [ -f "fs/exec.c" ]; then
+          sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\n#include <linux/binfmts.h>\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
+          sed -i 's/retval = bprm_mm_init(bprm);/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\n#endif\n\tretval = bprm_mm_init(bprm);/g' fs/exec.c
+        fi
+
+        # C. faccessat 钩子注入 (fs/open.c)
+        if [ -f "fs/open.c" ]; then
+          sed -i '/#include <linux\/falloc.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
+          sed -i 's/if (mode & ~S_IRWXO)/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, (int *)\&mode, NULL);\n#endif\n\tif (mode \& ~S_IRWXO)/g' fs/open.c
+        fi
+
+        # D. sys_reboot 钩子注入 (kernel/reboot.c)
+        if [ -f "kernel/reboot.c" ]; then
+          sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
+          sed -i 's/case LINUX_REBOOT_CMD_RESTART:/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif\n\tcase LINUX_REBOOT_CMD_RESTART:/g' kernel/reboot.c
+        fi
+
+        # E. sys_read 钩子注入 (fs/read_write.c)
+        if [ -f "fs/read_write.c" ]; then
+          sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
+          
+          rm -f ksys_read.patch
+          echo '--- a/fs/read_write.c' >> ksys_read.patch
+          echo '+++ b/fs/read_write.c' >> ksys_read.patch
+          echo '@@ -576,4 +576,7 @@' >> ksys_read.patch
+          echo ' ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)' >> ksys_read.patch
+          echo ' {' >> ksys_read.patch
+          echo '+#ifdef CONFIG_KSU_MANUAL_HOOK' >> ksys_read.patch
+          echo '+	if (unlikely(ksu_init_rc_hook)) ksu_handle_sys_read(fd, (char __user **)&buf, &count);' >> ksys_read.patch
+          echo '+#endif' >> ksys_read.patch
+          echo ' 	struct fd f = fdget_pos(fd);' >> ksys_read.patch
+          echo ' 	ssize_t ret = -EBADF;' >> ksys_read.patch
+          
+          patch -p1 < ksys_read.patch
+          rm -f ksys_read.patch
+        fi
+
+        # F. setresuid 核心校验钩子注入 (kernel/sys.c)
+        if [ -f "kernel/sys.c" ]; then
+          sed -i '/#include <linux\/uidgid.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif' kernel/sys.c
+          sed -i 's/kuid_t kruid, keuid, ksuid;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n\tkuid_t kruid, keuid, ksuid;/g' kernel/sys.c
+        fi
+
+        # =====================================================================
+        # 2. 三方驱动补丁性清洗
+        # =====================================================================
+        find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
+          echo "" >> "$mk_file"
+          echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
+        done
+
+        find techpack/display/ -type f -name "Makefile" | while read -r mk_file; do
+          echo "" >> "$mk_file"
+          echo "ccflags-y += -I\$(src) -I\$(srctree)/techpack/display/pll" >> "$mk_file"
+        done
+
+        if [ -f "drivers/hid/Makefile" ]; then
+          echo "ccflags-y += -I\$(srctree)/drivers/hid" >> drivers/hid/Makefile
+          sed -i 's/CFLAGS_hid-trace.o.*/CFLAGS_hid-trace.o := -I\$(src)/g' drivers/hid/Makefile
+        fi
+
+        if [ -f "drivers/power/supply/renesas/Makefile" ]; then
+          echo "ccflags-y += -I\$(srctree)/drivers/power/supply/renesas" >> drivers/power/supply/renesas/Makefile
+        fi
+        if [ -f "drivers/power/supply/renesas/idtp9415.c" ]; then
+          sed -i 's/#include <idtp9415.h>/#include "idtp9415.h"/g' drivers/power/supply/renesas/idtp9415.c
+        fi
+
+        # =====================================================================
+        # 3. 生成配置并完全对齐 ReSukiSU 官方文档参数
+        # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
+        echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
         ./scripts/config --file .config \
@@ -122,6 +208,10 @@ jobs:
             -e CONFIG_KSU_SUSFS \
             -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 
+        # =====================================================================
+        # 4. 正式启动编译
+        # =====================================================================
+        echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
 
     # =====================================================================
