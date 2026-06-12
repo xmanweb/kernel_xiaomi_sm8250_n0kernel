@@ -53,43 +53,16 @@ jobs:
 
     - name: Build Kernel
       run: |
-        # 重置可能被脏编译污染的文件，确保基线纯净
-        git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c security/selinux/selinuxfs.c 2>/dev/null || true
+        # 强制复位所有可能被污染的文件（包括之前魔改的 SELinux 目录）
+        git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c 2>/dev/null || true
+        git checkout security/selinux/ 2>/dev/null || true
 
         # =====================================================================
-        # 1. 【官方规范】静态变量导出：解除 SELinux 核心变量与函数的 static 限制并做全局导出
-        # =====================================================================
-        echo "Applying official ReSukiSU static variable exports..."
-        
-        if [ -f "security/selinux/selinuxfs.c" ]; then
-          echo "Un-staticizing and exporting critical SELinux symbols for ReSukiSU..."
-          sed -i 's/static ssize_t (\*write_op\[\])/ssize_t (\*write_op\[\])/g' security/selinux/selinuxfs.c
-          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c 2>/dev/null || sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
-          sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
-          
-          # 正面解决跨目录链接 undefined symbol：引入头文件并全局导出
-          sed -i '/#include "security.h"/a #include <linux/export.h>' security/selinux/selinuxfs.c
-          echo -e "\nEXPORT_SYMBOL_GPL(write_op);" >> security/selinux/selinuxfs.c
-        fi
-
-        if [ -f "security/selinux/hooks.c" ]; then
-          sed -i 's/static struct security_operations selinux_ops/struct security_operations selinux_ops/g' security/selinux/hooks.c 2>/dev/null || true
-        fi
-
-        if [ -f "security/selinux/ss/services.c" ]; then
-          sed -i 's/static struct page \*selinux_status_page;/struct page \*selinux_status_page;/g' security/selinux/ss/services.c
-          sed -i 's/static DEFINE_MUTEX(selinux_status_lock);/DEFINE_MUTEX(selinux_status_lock);/g' security/selinux/ss/services.c
-          sed -i 's/static DEFINE_RWLOCK(policy_rwlock);/DEFINE_RWLOCK(policy_rwlock);/g' security/selinux/ss/services.c
-          sed -i 's/static void security_dump_masked_av/void security_dump_masked_av/g' security/selinux/ss/services.c
-          sed -i 's/static void context_struct_compute_av/void context_struct_compute_av/g' security/selinux/ss/services.c
-        fi
-
-        # =====================================================================
-        # 2. 【指南全套注入】完整补全全套 Manual 规范桩点 (单行无折行高兼容设计)
+        # 1. 【指南全套注入】完整补全全套 Manual 规范桩点 (单行无折行高兼容设计)
         # =====================================================================
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
 
-        # A. stat 钩子注入 (fs/stat.c) -> 正面织入 64位与32位兼容全套桩点，诚实响应 ReSukiSU 原生审计
+        # A. stat 钩子注入 (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
           echo "Injecting full official-compliant 64/32bit hooks into fs/stat.c..."
           sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#ifdef CONFIG_COMPAT\nstruct compat_stat64;\nextern void ksu_handle_fstat64_ret(unsigned int *fd, struct compat_stat64 __user **statbuf_ptr);\n#endif\n#endif' fs/stat.c
@@ -145,7 +118,7 @@ jobs:
         fi
 
         # =====================================================================
-        # 3. 三方驱动清洗与环境修复 (小米10与Clang18环境专属适配)
+        # 2. 三方驱动清洗与环境修复 (小米10与Clang18环境专属适配)
         # =====================================================================
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
@@ -173,15 +146,15 @@ jobs:
         fi
 
         # =====================================================================
-        # 4. 生成配置并使用 scripts/config 启用全套 Manual 特性参数
+        # 3. 生成配置并激活纯 Manual 编译开关（剔除传统 -e KSU 干扰）
         # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        echo "Enabling ReSukiSU Manual Hook features into .config..."
+        echo "Enabling Pure ReSukiSU Manual Hook features into .config..."
         ./scripts/config --file .config \
-            -e KSU \
+            -d KSU \
             -e CONFIG_KSU_MANUAL_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
@@ -190,7 +163,7 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT
 
         # =====================================================================
-        # 5. 正式启动纯正 Manual 编译
+        # 4. 正式启动编译
         # =====================================================================
         echo "Starting kernel compilation..."
         make $MAKE_ARGS -j$(nproc)
