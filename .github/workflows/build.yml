@@ -206,23 +206,27 @@ jobs:
         make $MAKE_ARGS -j$(nproc)
 
     # =====================================================================
-    # 【AnyKernel3 步骤不变】拉取 AnyKernel3 模板并注入动态生成的配置文件
+    # 【双打包方案】并行拉取并生成两个独立的 AnyKernel3 构建工作空间
     # =====================================================================
-    - name: Prepare AnyKernel3 Template
+    - name: Setup Dual AnyKernel3 Workspaces
       run: |
         cd $GITHUB_WORKSPACE
-        echo "Cloning AnyKernel3 official template..."
-        git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 anykernel
+        echo "Cloning official AnyKernel3 base template..."
+        git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 ak3_with_dtb
+        cp -r ak3_with_dtb ak3_no_dtb
 
-        echo "Configuring anykernel.sh for Xiaomi Mi 10 (umi)..."
-        cat << 'EOF' > anykernel/anykernel.sh
+        # 1. 统一定制 anykernel.sh 基本属性配置函数
+        define_properties() {
+          local target_sh=$1
+          local kernel_flavor=$2
+          cat << EOF > "$target_sh"
         # AnyKernel3 Ramdisk Mod Script
         # osm0sis @ xda-developers
 
         ## AnyKernel setup
         # begin properties
         properties() {
-        kernel.string=Xiaomi SM8250 ReSukiSU & SUSFS Kernel by WangXin
+        kernel.string=Xiaomi SM8250 ReSukiSU & SUSFS Kernel (${kernel_flavor}) by WangXin
         do.devicecheck=1
         do.modules=0
         do.systemless=1
@@ -247,32 +251,55 @@ jobs:
         flash_boot;
         ## end install
         EOF
+        }
 
-        echo "Moving compiled kernel image to AnyKernel3 directory..."
+        # 2. 为两个版本分别写入对应的 anykernel.sh 说明
+        define_properties "ak3_with_dtb/anykernel.sh" "With-DTB"
+        define_properties "ak3_no_dtb/anykernel.sh" "No-DTB"
+
+        # =====================================================================
+        # 3. 分发内核编译产物到对应的打包目录
+        # =====================================================================
+        echo "Distributing kernel artifacts..."
+        
+        # A. 带 DTB 版本直接填充 Image.gz-dtb
         if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
-          cp arch/arm64/boot/Image.gz-dtb anykernel/Image.gz-dtb
-        elif [ -f "arch/arm64/boot/Image" ]; then
-          cp arch/arm64/boot/Image anykernel/Image
+          cp arch/arm64/boot/Image.gz-dtb ak3_with_dtb/Image.gz-dtb
+        else
+          echo "Error: Image.gz-dtb not found!" && exit 1
+        fi
+
+        # B. 不带 DTB 版本：使用 gzip 压缩纯 Image 镜像写入（防止混入附加的 DTB 段）
+        if [ -f "arch/arm64/boot/Image" ]; then
+          gzip -c arch/arm64/boot/Image > ak3_no_dtb/Image.gz
+          echo "Pure Image.gz created for No-DTB flavor."
+        else
+          echo "Error: Plain Image file not found!" && exit 1
         fi
 
     # =====================================================================
-    # 将产物目录打包并重命名为 Zip 包
+    # 【打包并输出】执行最终的压缩和产物分轨汇总
     # =====================================================================
-    - name: Pack Kernel into Flashable Zip
+    - name: Compress and Gather Dual Flashable Packages
       run: |
-        cd $GITHUB_WORKSPACE/anykernel
         BUILD_TIME=$(date +%Y%m%d_%H%M)
-        ZIP_NAME="AnyKernel3-Mi10-ReSukiSU-SUSFS-${BUILD_TIME}.zip"
-        
-        echo "Zipping AnyKernel3 structure into ${ZIP_NAME}..."
-        zip -r9 "../${ZIP_NAME}" * -x .git README.md
-
         mkdir -p $GITHUB_WORKSPACE/out_zip/
-        mv "../${ZIP_NAME}" $GITHUB_WORKSPACE/out_zip/
-        echo "Flashable package prepared at out_zip/"
 
-    - name: Upload Flashable Kernel Zip Artifact
+        # 1. 封包【带 DTB】版本
+        cd $GITHUB_WORKSPACE/ak3_with_dtb
+        ZIP_WITH_DTB="AnyKernel3-Mi10-ReSukiSU-SUSFS-WithDTB-${BUILD_TIME}.zip"
+        zip -r9 "$GITHUB_WORKSPACE/out_zip/${ZIP_WITH_DTB}" * -x .git README.md
+        
+        # 2. 封包【不带 DTB】版本
+        cd $GITHUB_WORKSPACE/ak3_no_dtb
+        ZIP_NO_DTB="AnyKernel3-Mi10-ReSukiSU-SUSFS-NoDTB-${BUILD_TIME}.zip"
+        zip -r9 "$GITHUB_WORKSPACE/out_zip/${ZIP_NO_DTB}" * -x .git README.md
+
+        echo "Dual flashable packages prepared successfully at out_zip/"
+        ls -la $GITHUB_WORKSPACE/out_zip/
+
+    - name: Upload Dual Flashable Zip Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Xiaomi-Mi10-Kernel-Flashable-Zip
+        name: Xiaomi-Mi10-Kernel-DualFlavor-Zips
         path: out_zip/*
