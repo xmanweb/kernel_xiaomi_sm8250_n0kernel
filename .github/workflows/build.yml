@@ -38,16 +38,16 @@ jobs:
         echo "Integrating Official ReSukiSU..."
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-    - name: Integrate Simonpunk SUSFS v2.1.0 (Strict Doc Compliance)
+    - name: Integrate Simonpunk SUSFS v2.1.0 (Align with ReSukiSU Doc)
       run: |
         cd $GITHUB_WORKSPACE
         echo "Cloning official simonpunk/susfs4ksu repository (kernel-4.19)..."
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 --depth=1 susfs_src
 
         # =====================================================================
-        # A. 严格遵照官方文档：拷贝内核层与全局头文件的核心源码
+        # A. 严格遵照官方文档：仅拷贝内核内核层与全局头文件的核心源码
         # =====================================================================
-        echo "Distributing SUSFS core file structure..."
+        echo "Distributing SUSFS core file structure to kernel..."
         if [ -d "susfs_src/kernel_patches/fs" ]; then
           cp -r susfs_src/kernel_patches/fs/* ./fs/
         fi
@@ -61,19 +61,10 @@ jobs:
         echo "Modifying ReSukiSU source files to bypass Kprobes entirely..."
         find KernelSU/ -type f \( -name "*.c" -o -name "*.h" \) | xargs sed -i 's/#ifdef CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/g'
 
-        # =====================================================================
-        # C. 严格遵照官方文档：对 ReSukiSU 内部打入 10_enable_susfs_for_ksu.patch
-        # =====================================================================
-        echo "Applying 10_enable_susfs_for_ksu.patch into KernelSU directory..."
-        if [ -f "susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
-          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU/
-          cd KernelSU
-          patch -p1 < 10_enable_susfs_for_ksu.patch || echo "Warning: KSU internal SUSFS patch applied with minor warnings/offsets."
-          cd $GITHUB_WORKSPACE
-        fi
+        # 注意：这里坚决不打入 10_enable_susfs_for_ksu.patch，完全由 ReSukiSU 原生接管！
 
         # =====================================================================
-        # D. 严格遵照官方文档：对整个 Linux 内核 VFS 层打入 50_add_susfs_in_kernel 补丁
+        # C. 严格遵照官方文档：对整个 Linux 内核 VFS 层打入 50_add_susfs_in_kernel 补丁
         # =====================================================================
         echo "Applying 50_add_susfs_in_kernel-4.19.patch to VFS layer..."
         PATCH_FILE=$(find susfs_src/kernel_patches/ -name "50_add_susfs_in_kernel-4.19*.patch" | head -n 1)
@@ -97,7 +88,7 @@ jobs:
 
     - name: Build Kernel
       run: |
-        # 强制复位基线手动桩点文件，防止任何潜在的重复定义冲突
+        # 强制复位基线手动桩点文件，防止干扰
         git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c 2>/dev/null || true
         git checkout security/selinux/ 2>/dev/null || true
 
@@ -159,7 +150,7 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 三方驱动清洗与环境修复 (小米10与Clang18环境适配)
+        # 2. 三方驱动清洗与环境修复
         # =====================================================================
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
@@ -187,15 +178,15 @@ jobs:
         fi
 
         # =====================================================================
-        # 3. 生成配置并完全对齐文档参数 (激活 KSU_SUSFS 关联链)
+        # 3. 生成配置并完全对齐 ReSukiSU 官方文档参数
         # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
         
-        echo "Enabling Pure ReSukiSU + Official Simonpunk SUSFS into .config..."
+        echo "Enabling Pure ReSukiSU + SUSFS into .config according to official spec..."
         ./scripts/config --file .config \
-            -d KSU \
+            -e CONFIG_KSU \
             -e CONFIG_KSU_MANUAL_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
@@ -207,7 +198,7 @@ jobs:
             -e CONFIG_SUSFS_SUS_MOUNT \
             -e CONFIG_SUSFS_TRY_UMOUNT \
             -e CONFIG_SUSFS_AUTO_ADD_SUS_MOUNT \
-            -e CONFIG_SUSFS_AUTO_ADD_SUS_PATH \
+            -e CONFIG_SUSFS_AUTO_AUTO_ADD_SUS_PATH \
             -e CONFIG_KSU_SUSFS \
             -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 
@@ -235,5 +226,5 @@ jobs:
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Xiaomi-SM8250-ReSukiSU-Official-SUSFS
+        name: Xiaomi-SM8250-ReSukiSU-DocCompliant-SUSFS
         path: out/*
