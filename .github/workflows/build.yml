@@ -90,23 +90,11 @@ jobs:
 
     - name: Build Kernel
       run: |
-        git checkout Makefile fs/read_write.c fs/stat.c fs/exec.c fs/open.c kernel/reboot.c kernel/sys.c 2>/dev/null || true
-        git checkout security/selinux/ 2>/dev/null || true
-
-        # =====================================================================
-        # 【全盘彻底清洗】击穿所有 Makefile/Kbuild/配置中的 LLVM 寄存器分配器错误参数
-        # =====================================================================
-        echo "Deep cleaning problematic LLVM regalloc advisor flags across entire tree..."
-        find . -type f \( -name "Makefile*" -o -name "*.mk" -o -name "*.Kbuild" -o -name "*.sh" -o -name "*.conf" \) | while read -r file; do
-          if grep -qE "regalloc-(enable|eviction)-advisor" "$file"; then
-            echo "Cleaning options in: $file"
-            sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' "$file" 2>/dev/null || true
-            sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' "$file" 2>/dev/null || true
-          fi
-        done
+        # 移除了会导致文件状态复位的 git checkout 语句，完全保持上一轮成功的基线状态
 
         # 1. 【指南全套注入】完整补全全套 Manual 规范桩点
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
+        
         # A. stat 钩子注入 (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
           sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#ifdef CONFIG_COMPAT\nstruct compat_stat64;\nextern void ksu_handle_fstat64_ret(unsigned int *fd, struct compat_stat64 __user **statbuf_ptr);\n#endif\n#endif' fs/stat.c
@@ -160,8 +148,11 @@ jobs:
         fi
 
         # =====================================================================
-        # 2. 三方驱动补丁性清洗
+        # 2. 仅保留最基础的三方驱动清洗（恢复首次编译成功时的逻辑）
         # =====================================================================
+        find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
+        find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
+
         find techpack/camera-cas/ -type f -name "Makefile" | while read -r mk_file; do
           echo "" >> "$mk_file"
           echo "ccflags-y += -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_cci -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_utils -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module/cam_sensor_io -I\$(srctree)/techpack/camera-cas/drivers/cam_sensor_module" >> "$mk_file"
@@ -215,7 +206,7 @@ jobs:
         make $MAKE_ARGS -j$(nproc)
 
     # =====================================================================
-    # 【新增步骤 1】拉取 AnyKernel3 模板并注入动态生成的配置文件
+    # 【AnyKernel3 步骤不变】拉取 AnyKernel3 模板并注入动态生成的配置文件
     # =====================================================================
     - name: Prepare AnyKernel3 Template
       run: |
@@ -223,7 +214,6 @@ jobs:
         echo "Cloning AnyKernel3 official template..."
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 anykernel
 
-        # 针对小米 10 (umi) 的 A/B 传统分区定制 anykernel.sh 配置文件
         echo "Configuring anykernel.sh for Xiaomi Mi 10 (umi)..."
         cat << 'EOF' > anykernel/anykernel.sh
         # AnyKernel3 Ramdisk Mod Script
@@ -258,7 +248,6 @@ jobs:
         ## end install
         EOF
 
-        # 将刚才成功编译出的内核产物拷贝进 AnyKernel3 目录
         echo "Moving compiled kernel image to AnyKernel3 directory..."
         if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
           cp arch/arm64/boot/Image.gz-dtb anykernel/Image.gz-dtb
@@ -267,19 +256,17 @@ jobs:
         fi
 
     # =====================================================================
-    # 【新增步骤 2】将产物目录打包并重命名为极具辨识度的 Zip 包
+    # 将产物目录打包并重命名为 Zip 包
     # =====================================================================
     - name: Pack Kernel into Flashable Zip
       run: |
         cd $GITHUB_WORKSPACE/anykernel
-        # 生成时间戳标记
-        BUILD_TIME=$(date +%Y%M%d_%H%M)
+        BUILD_TIME=$(date +%Y%m%d_%H%M)
         ZIP_NAME="AnyKernel3-Mi10-ReSukiSU-SUSFS-${BUILD_TIME}.zip"
         
         echo "Zipping AnyKernel3 structure into ${ZIP_NAME}..."
         zip -r9 "../${ZIP_NAME}" * -x .git README.md
 
-        # 把打包好的 zip 移动到独立输出目录准备上传
         mkdir -p $GITHUB_WORKSPACE/out_zip/
         mv "../${ZIP_NAME}" $GITHUB_WORKSPACE/out_zip/
         echo "Flashable package prepared at out_zip/"
