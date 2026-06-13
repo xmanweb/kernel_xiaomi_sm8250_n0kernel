@@ -76,13 +76,12 @@ jobs:
         fi
 
     # =====================================================================
-    # 【新增】智能编译器缓存 ccache，大幅压减二次编译时间
+    # 【新增】智能高效编译器缓存 ccache，避免高频擦除，精简冗余包
     # =====================================================================
     - name: Setup Kernel Compilation Cache (ccache)
-      uses: actions/cache@v4   # 建议使用成熟稳定的 v4
+      uses: actions/cache@v4
       with:
-        path: ~/.ccache        # 默认的 ccache 路径
-        # 钥匙只和分支挂钩。这样同一分支的下一次编译会精准命中这把钥匙，直接覆盖升级，不产生冗余包
+        path: ~/.ccache
         key: kernel-ccache-umi-${{ github.ref_name }}-${{ github.sha }}
         restore-keys: |
           kernel-ccache-umi-${{ github.ref_name }}-
@@ -99,21 +98,17 @@ jobs:
         echo "$CLANG_BIN" >> $GITHUB_PATH
         echo "$GAS_BIN" >> $GITHUB_PATH
         
-        # 配置 ccache 的最大容量限制（内核建议 2G~3G 足够）并宣告其路径
+        # 激活 ccache 的物理落盘路径并设定限制
         export CCACHE_DIR=$HOME/.ccache
         ccache -M 3G
         
-        # 【关键改动】在 CC=clang 前面加上 ccache 拦截器
-        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=\"ccache clang\" LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1" >> $GITHUB_ENV
+        # 【关键修复】彻底移除导致高通 Kconfig 报引号截断语法错误的 CC="ccache clang" 的写法
+        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1" >> $GITHUB_ENV
 
     - name: Build Kernel
       run: |
-        # 移除了会导致文件状态复位的 git checkout 语句，完全保持上一轮成功的基线状态
-
         # 1. 【指南全套注入】完整补全全套 Manual 规范桩点
         echo "Injecting full ReSukiSU official manual hooks into VFS & Syscall layers..."
-        
-        # A. stat 钩子注入 (fs/stat.c)
         if [ -f "fs/stat.c" ]; then
           sed -i '/#include <linux\/uaccess.h>/a #include <linux/compat.h>\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#ifdef CONFIG_COMPAT\nstruct compat_stat64;\nextern void ksu_handle_fstat64_ret(unsigned int *fd, struct compat_stat64 __user **statbuf_ptr);\n#endif\n#endif' fs/stat.c
           sed -i 's/error = vfs_fstatat/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif\n\terror = vfs_fstatat/g' fs/stat.c
@@ -121,28 +116,23 @@ jobs:
           sed -i 's/error = cp_compat_stat64(&stat, statbuf);/error = cp_compat_stat64(\&stat, statbuf);\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (!error) ksu_handle_fstat64_ret(\&fd, (struct compat_stat64 __user **)\&statbuf);\n#endif/g' fs/stat.c
         fi
 
-        # B. execve 钩子注入 (fs/exec.c)
         if [ -f "fs/exec.c" ]; then
           sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\n#include <linux/binfmts.h>\n__attribute__((hot)) extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n#endif' fs/exec.c
           sed -i 's/retval = bprm_mm_init(bprm);/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\n#endif\n\tretval = bprm_mm_init(bprm);/g' fs/exec.c
         fi
 
-        # C. faccessat 钩子注入 (fs/open.c)
         if [ -f "fs/open.c" ]; then
           sed -i '/#include <linux\/falloc.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot)) extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif' fs/open.c
           sed -i 's/if (mode & ~S_IRWXO)/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(\&dfd, \&filename, (int *)\&mode, NULL);\n#endif\n\tif (mode \& ~S_IRWXO)/g' fs/open.c
         fi
 
-        # D. sys_reboot 钩子注入 (kernel/reboot.c)
         if [ -f "kernel/reboot.c" ]; then
           sed -i '1i #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif' kernel/reboot.c
           sed -i 's/case LINUX_REBOOT_CMD_RESTART:/#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif\n\tcase LINUX_REBOOT_CMD_RESTART:/g' kernel/reboot.c
         fi
 
-        # E. sys_read 钩子注入 (fs/read_write.c)
         if [ -f "fs/read_write.c" ]; then
           sed -i '/#include <linux\/compat.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern bool ksu_init_rc_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n#endif' fs/read_write.c
-          
           rm -f ksys_read.patch
           echo '--- a/fs/read_write.c' >> ksys_read.patch
           echo '+++ b/fs/read_write.c' >> ksys_read.patch
@@ -154,20 +144,16 @@ jobs:
           echo '+#endif' >> ksys_read.patch
           echo ' 	struct fd f = fdget_pos(fd);' >> ksys_read.patch
           echo ' 	ssize_t ret = -EBADF;' >> ksys_read.patch
-          
           patch -p1 < ksys_read.patch
           rm -f ksys_read.patch
         fi
 
-        # F. setresuid 核心校验钩子注入 (kernel/sys.c)
         if [ -f "kernel/sys.c" ]; then
           sed -i '/#include <linux\/uidgid.h>/a #ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif' kernel/sys.c
           sed -i 's/kuid_t kruid, keuid, ksuid;/#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n\tkuid_t kruid, keuid, ksuid;/g' kernel/sys.c
         fi
 
-        # =====================================================================
-        # 2. 仅保留最基础的三方驱动清洗（恢复首次编译成功时的逻辑）
-        # =====================================================================
+        # 2. 稳如磐石的稳态三方驱动 YML 清洗与头文件强制关联
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
@@ -193,9 +179,7 @@ jobs:
           sed -i 's/#include <idtp9415.h>/#include "idtp9415.h"/g' drivers/power/supply/renesas/idtp9415.c
         fi
 
-        # =====================================================================
         # 3. 生成配置并完全对齐 ReSukiSU 官方文档参数
-        # =====================================================================
         DEFCONFIG_NAME="vendor/umi_defconfig" 
         echo "Configuring kernel with $DEFCONFIG_NAME..."
         make $MAKE_ARGS $DEFCONFIG_NAME
@@ -217,14 +201,12 @@ jobs:
             -e CONFIG_KSU_SUSFS \
             -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 
-        # =====================================================================
-        # 4. 正式启动编译
-        # =====================================================================
-        echo "Starting kernel compilation..."
-        make $MAKE_ARGS -j$(nproc)
+        # 4. 正式启动编译（通过前置调用 ccache，完美避开 Kconfig 的解析报错）
+        echo "Starting kernel compilation with ccache telemetry..."
+        ccache make $MAKE_ARGS -j$(nproc)
 
     # =====================================================================
-    # 【双打包方案】并行拉取并生成两个独立的 AnyKernel3 构建工作空间
+    # 【双版本打包】并行建立两套独立的 AnyKernel3 卡刷目录结构
     # =====================================================================
     - name: Setup Dual AnyKernel3 Workspaces
       run: |
@@ -233,7 +215,7 @@ jobs:
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 ak3_with_dtb
         cp -r ak3_with_dtb ak3_no_dtb
 
-        # 1. 统一定制 anykernel.sh 基本属性配置函数
+        # 统一写入 anykernel.sh 参数配置宏函数
         define_properties() {
           local target_sh=$1
           local kernel_flavor=$2
@@ -271,49 +253,47 @@ jobs:
         EOF
         }
 
-        # 2. 为两个版本分别写入对应的 anykernel.sh 说明
+        # 分别向两个打包空间灌入定制的 anykernel.sh 说明脚本
         define_properties "ak3_with_dtb/anykernel.sh" "With-DTB"
         define_properties "ak3_no_dtb/anykernel.sh" "No-DTB"
 
-        # =====================================================================
-        # 3. 分发内核编译产物到对应的打包目录
-        # =====================================================================
-        echo "Distributing kernel artifacts..."
+        # 分发并精准封装内核产物
+        echo "Distributing kernel artifacts to dual tracks..."
         
-        # A. 带 DTB 版本直接填充 Image.gz-dtb
+        # A. 带 DTB 轨：直接装填 Image.gz-dtb
         if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
           cp arch/arm64/boot/Image.gz-dtb ak3_with_dtb/Image.gz-dtb
         else
-          echo "Error: Image.gz-dtb not found!" && exit 1
+          echo "Error: Image.gz-dtb missing!" && exit 1
         fi
 
-        # B. 不带 DTB 版本：使用 gzip 压缩纯 Image 镜像写入（防止混入附加的 DTB 段）
+        # B. 不带 DTB 轨：使用 gzip 临时压缩最纯净的原始 Image 核心体，彻底不混入任何 dtb 尾巴
         if [ -f "arch/arm64/boot/Image" ]; then
           gzip -c arch/arm64/boot/Image > ak3_no_dtb/Image.gz
-          echo "Pure Image.gz created for No-DTB flavor."
+          echo "Pure Image.gz successfully squashed for No-DTB track."
         else
-          echo "Error: Plain Image file not found!" && exit 1
+          echo "Error: Base Image missing!" && exit 1
         fi
 
     # =====================================================================
-    # 【打包并输出】执行最终的压缩和产物分轨汇总
+    # 执行最终的双版本高压多线程 Zip 封包工作
     # =====================================================================
     - name: Compress and Gather Dual Flashable Packages
       run: |
         BUILD_TIME=$(date +%Y%m%d_%H%M)
         mkdir -p $GITHUB_WORKSPACE/out_zip/
 
-        # 1. 封包【带 DTB】版本
+        # 1. 压制【带有完整 DTB 硬件树】卡刷包
         cd $GITHUB_WORKSPACE/ak3_with_dtb
         ZIP_WITH_DTB="AnyKernel3-Mi10-ReSukiSU-SUSFS-WithDTB-${BUILD_TIME}.zip"
         zip -r9 "$GITHUB_WORKSPACE/out_zip/${ZIP_WITH_DTB}" * -x .git README.md
         
-        # 2. 封包【不带 DTB】版本
+        # 2. 压制【不带 DTB、仅保留基础 Kernel 体】卡刷包
         cd $GITHUB_WORKSPACE/ak3_no_dtb
         ZIP_NO_DTB="AnyKernel3-Mi10-ReSukiSU-SUSFS-NoDTB-${BUILD_TIME}.zip"
         zip -r9 "$GITHUB_WORKSPACE/out_zip/${ZIP_NO_DTB}" * -x .git README.md
 
-        echo "Dual flashable packages prepared successfully at out_zip/"
+        echo "All files successfully packed to out_zip/ folder:"
         ls -la $GITHUB_WORKSPACE/out_zip/
 
     - name: Upload Dual Flashable Zip Artifacts
