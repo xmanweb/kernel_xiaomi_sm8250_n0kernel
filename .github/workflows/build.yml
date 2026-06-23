@@ -33,7 +33,7 @@ jobs:
         mkdir -p zyc-clang
         tar -xzf Clang-16.0.6-20260510.tar.gz -C zyc-clang
 
-    - name: "PHASE 1: Apply SUSFS 4.14 Baseline Patch"
+    - name: "PHASE 1: Apply SUSFS 4.19 Baseline Patch"
       run: |
         cd $GITHUB_WORKSPACE
         curl -fsSL "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch" -o susfs_to_419.patch
@@ -109,10 +109,8 @@ jobs:
           echo "---------------------------------------------------------------------"
         }
 
-        monitor_diff "fs/namespace.c" "fs/namespace.c Structural Injection"
-        monitor_diff "fs/proc/cmdline.c" "fs/proc/cmdline.c Full Rewrite"
+        monitor_diff "fs/open.c" "fs/open.c Structural Injection"
         monitor_diff "fs/proc/task_mmu.c" "fs/proc/task_mmu.c Map Hooks"
-        monitor_diff "kernel/sys.c" "kernel/sys.c Uname Spoofing"
 
         echo "====================================================================="
         echo "  ✅ [YML AUDIT ENGINE] Phase 1.5 Verification Finished and Validated!"
