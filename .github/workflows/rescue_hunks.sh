@@ -36,35 +36,25 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# 2. 修复 fs/proc/task_mmu.c
+# 适配 SUSFS SUS_MAP：精准修补 fs/proc/task_mmu.c
 # ---------------------------------------------------------------------
-FILE_MMU="fs/proc/task_mmu.c"
-if [ -f "$FILE_MMU" ]; then
-    echo "📝 正在修复: $FILE_MMU"
+FILE_TASK_MMU="fs/proc/task_mmu.c"
 
-    # Hunk #1: 换用 pagewalk.h 确保 100% 成功插入原 patch 的 susfs_def.h
-    if ! grep -q "susfs_def.h" "$FILE_MMU"; then
-        sed -i '/#include <linux\/pagewalk.h>/a \
-#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif \/\/ #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)' "$FILE_MMU"
-        echo "  - 头文件 susfs_def.h 添加成功"
+if [ -f "$FILE_TASK_MMU" ]; then
+    echo "📝 正在全新注入 $FILE_TASK_MMU 对应的 SUS_MAP 逻辑..."
+
+    # 1. 补上漏掉的头文件：在 #include <linux/shmem_fs.h> 后面追加包含 susfs_def.h
+    sed -i '/#include <linux\/shmem_fs.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n#include <linux/susfs_def.h>\n#endif' "$FILE_TASK_MMU"
+
+    # 2. 核心逻辑注入：直接全字匹配替换 4.19 的原生 walk_page_range 行
+    sed -i 's/ret = walk_page_range(mm, start_vaddr, end, \&pagemap_ops, \&pm);/#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\t{\n\t\t\tstruct vm_area_struct *vma = find_vma(mm, start_vaddr);\n\t\t\tif (vma \&\& vma->vm_file \&\& SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\t\tgoto bypass_orig_flow;\n\t\t}\n#endif\n\t\tret = walk_page_range(mm, start_vaddr, end, \&pagemap_ops, \&pm);\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n#endif/g' "$FILE_TASK_MMU"
+
+    # 3. 终极严谨验证：只捞取我们手工塞进去的特定变量声明与初始化特征
+    if grep -q "struct vm_area_struct \*vma = find_vma" "$FILE_TASK_MMU"; then
+        echo "✅ $FILE_TASK_MMU 核心劫持逻辑（find_vma 局部块）合入成功！"
+    else
+        echo "❌ $FILE_TASK_MMU 补丁合入踏空，请检查源码特征行是否匹配！"
     fi
-
-    # Hunk #8: pagemap_read 逻辑注入
-    if ! grep -q "goto bypass_orig_flow;" "$FILE_MMU"; then
-        # 在 if (ret) goto out_free; 之后插入判断和跳转
-        sed -i '/if (ret)/,/goto out_free;/ {
-            /goto out_free;/a \
-#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\tvma = find_vma(mm, start_vaddr);\n\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tgoto bypass_orig_flow;\n#endif \/\/ #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-        }' "$FILE_MMU"
-
-        # 在 walk_page_range 之后插入绕过标签
-        sed -i '/ret = walk_page_range(start_vaddr, end, &pagemap_walk);/a \
-#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n#endif \/\/ #ifdef CONFIG_KSU_SUSFS_SUS_MAP' "$FILE_MMU"
-        echo "  - pagemap_read 劫持逻辑修复成功"
-    fi
-    echo "✅ $FILE_MMU 修复成功。"
-else
-    echo "❌ 找不到文件: $FILE_MMU" && exit 1
 fi
 
 echo "🎉 所有补丁冲突已完美修复！"
