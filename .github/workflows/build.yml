@@ -166,17 +166,23 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 精准修复顶层 Makefile 中导致 Clang 16 崩溃的机器学习分配参数
-        echo "Patching top-level Makefile to fix Clang 16 regalloc crash..."
+        # 2. 精准修复顶层 Makefile 中导致 Clang崩溃的优化参数
+        echo "Patching top-level Makefile..."
         sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 3. 全盘暴力清洗所有子 Makefile 的不兼容残余参数（包括刚才卡死的 -funified-lto）
-        echo "Sweeping all sub-Makefiles for clean optimization arguments and stripping unified-lto..."
-        find . -type f \( -name "Makefile*" -o -name "*.mk" \) | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
-        find . -type f \( -name "Makefile*" -o -name "*.mk" \) | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
-        # 核心加码：斩草除根，抹除高通魔改遗留的不兼容参数
-        find . -type f \( -name "Makefile*" -o -name "*.mk" \) | xargs sed -i 's/-funified-lto//g' 2>/dev/null || true
+        # 3. 【无死角大清洗】：不仅清洗寄存器分配，把高通老代码遗留的机器学习内联（Inline Advisor）也全部抹杀！
+        echo "Sweeping all sub-Makefiles for regalloc-advisor, inline-advisor and unified-lto..."
+        find . -type f \( -name "Makefile*" -o -name "*.mk" \) | while read -r mk_file; do
+          # 清除 regalloc 机器学习分配
+          sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
+          sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
+          # 核心针对：清除引发本次翻车的 Inline 机器学习内联
+          sed -i -E 's/-mllvm -inline-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
+          sed -i -E 's/-inline-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
+          # 清除淘汰的 unified-lto
+          sed -i 's/-funified-lto//g' "$mk_file" 2>/dev/null || true
+        done
 
         # 4. 修复静态符号检查限制
         if [ -f "security/selinux/selinuxfs.c" ]; then
@@ -220,7 +226,7 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e BUILD_ARM64_DT_OVERLAY
 
-        # 8. 关掉不稳定的 Full LTO，无缝切换到现代高效的 ThinLTO 模式
+        # 8. 锁定现代、并行的 ThinLTO 模式
         echo "Switching LTO mode from Full to Thin..."
         ./scripts/config --file out/.config -d LTO_CLANG_FULL
         ./scripts/config --file out/.config -e LTO_CLANG_THIN
@@ -229,8 +235,9 @@ jobs:
         make $MAKE_ARGS silentoldconfig
 
         # 10. 执行满载并行内核编译
-        echo "Starting kernel compilation with ThinLTO enabled..."
-        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" -j$(nproc --all)
+        # 通过 LDFLAGS_vmlinux="-mllvm -inline-advisor=default" 强行覆盖残留的垃圾参数，把死锁的 Advisor 打回原形！
+        echo "Starting kernel compilation with ThinLTO & Advisor Overrides..."
+        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" LDFLAGS_vmlinux="-mllvm -inline-advisor=default" -j$(nproc --all)
         
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
