@@ -167,7 +167,7 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # 2. 严格锁定全套 LLVM 工具链走 ZyC-Clang 16
-        # 【一劳永逸】：在 KCFLAGS 注入全球参数，强行规范 Clang 16 后端行为，拒绝挨个文件打补丁！
+        # 【核心修正】：使用双引号包裹 KCFLAGS，防止 make 将其中的 LLVM 参数误识别为自己的配置项
         export MAKE_ARGS="ARCH=arm64 \
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -180,7 +180,7 @@ jobs:
                           STRIP=llvm-strip \
                           LLVM=1 \
                           LLVM_IAS=1 \
-                          KCFLAGS=-mllvm -regalloc=default"
+                          KCFLAGS=\"-mllvm -regalloc=default\""
 
         # 生成原始高通配置
         make O=out $MAKE_ARGS vendor/umi_defconfig
