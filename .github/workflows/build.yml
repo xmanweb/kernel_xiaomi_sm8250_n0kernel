@@ -166,21 +166,16 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 【精准降维打击】：利用 Copilot 抓出来的罪证，用安全的全局正则彻底干掉顶层 Makefile 里的高通魔改黑货
+        # 2. 精准修复顶层 Makefile 中导致 Clang 16 崩溃的优化参数
         echo "Neutralizing Qualcomm MLGO and Legacy LTO parameters at source via Regex..."
-        # A. 抹除导致 Clang 16 链接器爆 Advisor 错误的 MLGO 机器学习参数
         sed -i -E 's/.*-mllvm -regalloc-enable-advisor=release.*/# Removed Regalloc MLGO/g' Makefile
         sed -i -E 's/.*-mllvm -enable-ml-inliner=release.*/# Removed Inline MLGO/g' Makefile
         sed -i -E 's/.*-mllvm -regalloc-enable-advisor=release//g' Makefile 2>/dev/null || true
-        
-        # B. 抹除导致汇编崩溃的冷热代码分割和不兼容的机器特征分割
         sed -i -E 's/.*-mllvm -hot-cold-split=true.*/# Removed Hot Cold Split/g' Makefile
         sed -i -E 's/.*-fsplit-machine-functions.*/# Removed Split Machine Functions/g' Makefile
-        
-        # C. 斩草除根：抹除高通写死在 ThinLTO 里的废弃参数 -funified-lto
         sed -i 's/-funified-lto//g' Makefile
 
-        # 3. 【全盘扫荡】：顺便把所有子 Makefile 里可能残留的动态拼接痕迹洗干净（双重保险）
+        # 3. 全盘暴力清洗所有子 Makefile 里的显式痕迹
         echo "Sweeping all sub-Makefiles for generic protection..."
         find . -type f \( -name "Makefile*" -o -name "*.mk" \) | while read -r mk_file; do
           sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
@@ -190,10 +185,15 @@ jobs:
           sed -i 's/-funified-lto//g' "$mk_file" 2>/dev/null || true
         done
 
-        # 4. 修复静态符号检查限制
+        # 4. 【精准爆破】：解决 ThinLTO 模式下 SUSFS 挂钩 SELinux 符号隔离的问题
+        echo "Fixing static symbol visibility for SELinux and SUSFS Hooks..."
         if [ -f "security/selinux/selinuxfs.c" ]; then
-          echo "Removing static prefix from sel_handle_status_ops..."
+          # A. 老牌修复项：解封 sel_handle_status_ops
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
+          
+          # B. 精准加码：只针对 write_op 指针数组这一行去掉 static，绝不扩大范围
+          echo "Removing static prefix specifically from write_op array in selinuxfs.c..."
+          sed -i 's/static ssize_t (\*const write_op\[\])(struct file \*, char \*, size_t)/ssize_t (\*const write_op\[\])(struct file \*, char \*, size_t)/g' security/selinux/selinuxfs.c
         fi
 
         # 5. 锁定全套标准、干净的工具链编译参数
@@ -215,7 +215,7 @@ jobs:
         # 6. 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
         
-        # 7. 注入 KSU 和 SUSFS 全部核心扩展项（包含 SUS_MAP）
+        # 7. 注入 KSU 和 SUSFS 全部核心扩展项
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
