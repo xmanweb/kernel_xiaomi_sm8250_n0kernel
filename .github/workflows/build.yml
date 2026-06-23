@@ -167,10 +167,9 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # =====================================================================
-        # 【全自动通用破局补丁 v3】
-        # 1. 压制 scripts/mod 编译期 regalloc 崩溃
-        # 2. 压制 Kbuild 准备阶段与 vdso 子系统的 regalloc 后端死锁
-        # 3. 剔除不支持的编译参数
+        # 【全自动通用破局补丁 v4】
+        # 针对 vdso 分支：不能用 -O0，否则会导致内联失败触发 dynamic relocations 报错。
+        # 方案：使用 -O2 保留内联，但追加后端参数锁死分配器，既有优化又不会崩溃！
         # =====================================================================
         if [ -f "scripts/mod/Makefile" ]; then
           echo "Globally bypassing regalloc for scripts/mod..."
@@ -183,8 +182,9 @@ jobs:
         fi
 
         if [ -f "arch/arm64/kernel/vdso/Makefile" ]; then
-          echo "Globally bypassing regalloc for vdso system..."
-          sed -i '1i\subdir-ccflags-y := -O0\nCFLAGS_vgettimeofday.o := -O0' arch/arm64/kernel/vdso/Makefile
+          echo "Bypassing regalloc while maintaining inlining for vdso..."
+          # 在顶部注入：允许优化以消除外部 memcpy 链接，但限制后端分配器的深度分析行为
+          sed -i '1i\subdir-ccflags-y := -O2 -mllvm -regalloc=fast\nCFLAGS_vgettimeofday.o := -O2 -mllvm -regalloc=fast' arch/arm64/kernel/vdso/Makefile
         fi
 
         # 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
