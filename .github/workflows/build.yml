@@ -152,39 +152,9 @@ jobs:
         monitor_diff "kernel/reboot.c" "Final Check - kernel/reboot.c Inline Hook"
         monitor_diff "kernel/sys.c" "Final Check - kernel/sys.c Inline Hook"
         monitor_diff "drivers/input/input.c" "Final Check - Input Device Hook"
+        monitor_diff "include/linux/seccomp.h" "Final Check - seccomp Hook"
         echo "====== Final Audit Complete ======"
-
-
-    # =====================================================================
-    # 【新增】智能高效编译器缓存 ccache，避免高频擦除，精简冗余包
-    # =====================================================================
-    - name: Setup Kernel Compilation Cache (ccache)
-      uses: actions/cache@v4
-      with:
-        path: ~/.ccache
-        key: kernel-ccache-umi-${{ github.ref_name }}-${{ github.sha }}
-        restore-keys: |
-          kernel-ccache-umi-${{ github.ref_name }}-
-          kernel-ccache-umi-
-
-    - name: Set Environment Variables
-      run: |
-        echo "ARCH=arm64" >> $GITHUB_ENV
-        echo "SUBARCH=arm64" >> $GITHUB_ENV
-        echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
-        
-        CLANG_BIN="$GITHUB_WORKSPACE/toolchain/bin"
-        GAS_BIN="$GITHUB_WORKSPACE/toolchain/gas/any/bin"
-        echo "$CLANG_BIN" >> $GITHUB_PATH
-        echo "$GAS_BIN" >> $GITHUB_PATH
-        
-        # 激活 ccache 的物理落盘路径并设定限制
-        export CCACHE_DIR=$HOME/.ccache
-        ccache -M 3G
-        
-        # 【关键修复】彻底移除导致高通 Kconfig 报引号截断语法错误的 CC="ccache clang" 的写法
-        echo "MAKE_ARGS=ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi- CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1" >> $GITHUB_ENV
-
+    
     - name: Build Kernel
       run: |
         cd $GITHUB_WORKSPACE
@@ -238,8 +208,8 @@ jobs:
         BUILD_DATE=$(date -d "+8 hours" +%Y%m%d_%H%M)
         SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
         
-        ZIP_FULL="crux-kernel-resukisu-susfs-${BUILD_DATE}-${SHORT_SHA}-With-DTB.zip"
-        ZIP_NODTB="crux-kernel-resukisu-susfs-${BUILD_DATE}-${SHORT_SHA}-No-DTB.zip"
+        ZIP_FULL="umi-kernel-resukisu-susfs-${BUILD_DATE}-${SHORT_SHA}-With-DTB.zip"
+        ZIP_NODTB="umi-kernel-resukisu-susfs-${BUILD_DATE}-${SHORT_SHA}-No-DTB.zip"
         
         echo "FINAL_ZIP_NAME=${ZIP_FULL}" >> $GITHUB_ENV
         echo "NO_DTB_ZIP_NAME=${ZIP_NODTB}" >> $GITHUB_ENV
@@ -255,7 +225,7 @@ jobs:
           local track_mode="$2"
           echo '# AnyKernel3 Ramdisk Mod Script' > "$target_script"
           echo 'properties() { ' >> "$target_script"
-          echo "kernel.string=Mi9Pro crux ReSukiSU SUSFS - ${track_mode} - ${BUILD_DATE}" >> "$target_script"
+          echo "kernel.string=Mi10 umi ReSukiSU SUSFS - ${track_mode} - ${BUILD_DATE}" >> "$target_script"
           echo 'do.devicecheck=1; do.modules=0; do.systemless=1; do.cleanup=1; do.cleanuponabort=1;' >> "$target_script"
           echo "device.name1=umi" >> "$target_script"
           echo '} ' >> "$target_script"
