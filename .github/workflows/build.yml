@@ -174,22 +174,21 @@ jobs:
         echo "Removing unsupported Clang options..."
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 4. 锁定全套标准 sm8250 编译参数
+        # 严格还原并整合可以成功跑通的 LLVM 完整工具链及集成汇编器参数
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
                           CC=clang \
-                          HOSTCC=clang \
-                          CLANG_TRIPLE=aarch64-linux-gnu- \
-                          CROSS_COMPILE=aarch64-linux-gnu- \
-                          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                          CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
                           LD=ld.lld \
                           AR=llvm-ar \
                           NM=llvm-nm \
                           OBJCOPY=llvm-objcopy \
                           OBJDUMP=llvm-objdump \
-                          STRIP=llvm-strip"
+                          STRIP=llvm-strip \
+                          CROSS_COMPILE=aarch64-linux-gnu- \
+                          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+                          LLVM=1 \
+                          LLVM_IAS=1"
 
         # 1. 【核心注入】：在编译前，直接用 sed 精准抹去 selinuxfs.c 中该变量的 static 修饰符
         if [ -f "security/selinux/selinuxfs.c" ]; then
