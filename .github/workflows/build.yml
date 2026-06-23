@@ -167,9 +167,9 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # =====================================================================
-        # 【全自动通用破局补丁】
-        # 直接在前期编译和准备阶段的 Makefile/Kbuild 头部强行注入全局 -O0。
-        # 彻底让所有的空文件检测、架构偏移计算绕过 Clang 16 的后端 Bug，无需逐个文件排查！
+        # 【全自动通用破局补丁 v2】
+        # 1. 压制准备阶段过渡文件的 regalloc 崩溃。
+        # 2. 全局剔除 Clang 16 在 aarch64 架构下不支持的 '-fsplit-machine-functions' 刺头参数！
         # =====================================================================
         if [ -f "scripts/mod/Makefile" ]; then
           echo "Globally bypassing regalloc for scripts/mod..."
@@ -180,6 +180,10 @@ jobs:
           echo "Globally bypassing regalloc for Kbuild prepare stage..."
           sed -i '1i\CFLAGS_bounds.o := -O0\nCFLAGS_asm-offsets.o := -O0' Kbuild
         fi
+
+        # 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
+        echo "Removing unsupported Clang options..."
+        sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
         # 2. 锁定全套标准 sm8250 编译参数
         export MAKE_ARGS="ARCH=arm64 \
