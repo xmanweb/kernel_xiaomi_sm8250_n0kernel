@@ -14,18 +14,22 @@ FILE_OPEN="fs/open.c"
 if [ -f "$FILE_OPEN" ]; then
     echo "📝 正在修复: $FILE_OPEN"
     
-    # 检查是否已经应用过，防止重复注入
-    if ! grep -q "retry:" "$FILE_OPEN"; then
-        # 在 fd = get_unused_fd_flags(flags); 之后插入 retry 标签
+    # 【精准修复】改用检测 SUSFS 的独有宏，防止被高通原厂的 retry: 误导
+    if ! grep -q "CONFIG_KSU_SUSFS_OPEN_REDIRECT" "$FILE_OPEN"; then
+        
+        # 1. 注入 retry: 标签
+        # 定位到 get_unused_fd_flags 这一行，并在其下方插入
         sed -i '/fd = get_unused_fd_flags(flags);/a \
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\nretry:\n#endif \/\/ #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT' "$FILE_OPEN"
 
-        # 在 struct file *f = do_filp_open(dfd, tmp, &op); 之后插入 open_redirect 的核心判断逻辑
+        # 2. 注入 open_redirect 的核心劫持逻辑
+        # 定位到 do_filp_open 这一行，并在其下方插入
         sed -i '/struct file \*f = do_filp_open(dfd, tmp, &op);/a \
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT\n\t\tif (!is_inode_open_redirect && f && !IS_ERR(f)) {\n\t\t\tstruct inode *inode = file_inode(f);\n\t\t\tif (SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode)) {\n\t\t\t\tfake_filename = susfs_open_redirect_spoof_do_sys_openat(inode);\n\t\t\t\tif (fake_filename && !IS_ERR(fake_filename)) {\n\t\t\t\t\tis_inode_open_redirect = true;\n\t\t\t\t\tfilp_close(f, NULL);\n\t\t\t\t\tputname(tmp);\n\t\t\t\t\ttmp = fake_filename;\n\t\t\t\t\tgoto retry;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n#endif \/\/ #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT' "$FILE_OPEN"
-        echo "✅ $FILE_OPEN 修复成功。"
+        
+        echo "✅ $FILE_OPEN 冲突补丁强制修复成功。"
     else
-        echo "⏭️ $FILE_OPEN 似乎已经修复过，跳过。"
+        echo "⏭️ $FILE_OPEN 确定已包含 SUSFS 宏，跳过。"
     fi
 else
     echo "❌ 找不到文件: $FILE_OPEN" && exit 1
