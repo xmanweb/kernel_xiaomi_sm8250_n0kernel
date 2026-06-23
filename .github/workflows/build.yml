@@ -171,24 +171,18 @@ jobs:
         sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 3. 【经典复刻】：全盘暴力清洗所有子 Makefile 的不兼容残余参数
+        # 3. 全盘暴力清洗所有子 Makefile 的不兼容残余参数
         echo "Sweeping all sub-Makefiles for clean optimization arguments..."
         find . -type f \( -name "Makefile*" -o -name "*.mk" \) | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
         find . -type f \( -name "Makefile*" -o -name "*.mk" \) | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
 
-        # 4. 【局部精准拆弹】：命令内核编译系统，对极易爆发 STXR 冲突的底层核心锁文件剥离 LTO
-        # 这样它们不会进入 LTO 后端断言，而其他全盘代码依然保留完整的全量 LTO 优化！
-        echo "Selectively removing LTO from spinlock and scheduling core to bypass STXR issue..."
-        echo "CFLAGS_REMOVE_spinlock.o = \$(CC_FLAGS_LTO)" >> arch/arm64/kernel/Makefile
-        echo "CFLAGS_REMOVE_cputime.o = \$(CC_FLAGS_LTO)" >> kernel/Makefile
-
-        # 5. 修复静态符号检查限制
+        # 4. 修复静态符号检查限制
         if [ -f "security/selinux/selinuxfs.c" ]; then
           echo "Removing static prefix from sel_handle_status_ops..."
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
         fi
 
-        # 6. 锁定全套标准、干净的工具链编译参数
+        # 5. 锁定全套标准、干净的工具链编译参数
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
@@ -204,10 +198,10 @@ jobs:
                           LLVM=1 \
                           LLVM_IAS=1"
 
-        # 7. 生成原始高通配置
+        # 6. 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
         
-        # 8. 注入 KSU 和 SUSFS 全部核心扩展项
+        # 7. 注入 KSU 和 SUSFS 全部核心扩展项
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -224,17 +218,18 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e BUILD_ARM64_DT_OVERLAY
 
-        # 9. 强制启用 ARM64 LSE 硬件原子指令（双保险：全面拦截旧汇编生成）
-        echo "Forcing ARM64 LSE Atomics via config..."
-        ./scripts/config --file out/.config -e ARM64_LSE_ATOMICS
+        # 8. 【终极绝杀】：关掉不稳定的 Full LTO，无缝切换到现代高效的 ThinLTO
+        # 既保全了全内核 LTO 的极致性能，又在原理上彻底根除了 LTO 机器码生成的 STXR 寄存器踩踏
+        echo "Switching LTO mode from Full to Thin to safely bypass LLVM Backend assert..."
+        ./scripts/config --file out/.config -d LTO_CLANG_FULL
+        ./scripts/config --file out/.config -e LTO_CLANG_THIN
 
-        # 10. 同步 .config 依赖树
+        # 9. 同步 .config 依赖树
         make $MAKE_ARGS silentoldconfig
 
-        # 11. 执行满载并行内核编译
-        # 注入全局链接器参数进一步宽容后端机器码错误，多重防线并进！
-        echo "Starting kernel compilation with hybrid LTO protections..."
-        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" LDFLAGS_vmlinux="-mllvm -mattr=+no-unpredictable-stxr" -j$(nproc --all)
+        # 10. 执行满载并行内核编译（ThinLTO 极速冲锋）
+        echo "Starting kernel compilation with ThinLTO enabled..."
+        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" -j$(nproc --all)
         
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
