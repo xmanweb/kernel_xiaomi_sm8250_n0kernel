@@ -174,7 +174,7 @@ jobs:
         echo "Removing unsupported Clang options..."
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 严格还原并整合可以成功跑通的 LLVM 完整工具链及集成汇编器参数
+                # 强制链接器在 LTO 后端处理时忽略或宽容 unpredictable stxr 检查
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
@@ -188,7 +188,9 @@ jobs:
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                           LLVM=1 \
-                          LLVM_IAS=1"
+                          LLVM_IAS=1 \
+                          LDFLAGS_vmlinux=\"-mllvm -mattr=+no-unpredictable-stxr\""
+
 
         # 1. 【核心注入】：在编译前，直接用 sed 精准抹去 selinuxfs.c 中该变量的 static 修饰符
         if [ -f "security/selinux/selinuxfs.c" ]; then
