@@ -191,10 +191,14 @@ jobs:
                           OBJDUMP=llvm-objdump \
                           STRIP=llvm-strip"
 
-        # 生成原始高通配置
+                # 1. 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
+
+        # 2. 【核心注入】：绕过 Kconfig 自动精简，暴力把参数写死在生成的 .config 末尾
+        echo "CONFIG_KALLSYMS=y" >> out/.config
+        echo "CONFIG_KALLSYMS_ALL=y" >> out/.config
         
-        # 注入 KSU 和 SUSFS 必要扩展
+        # 3. 注入 KSU 和 SUSFS 的其余扩展项（这里依然保留原样）
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -209,15 +213,14 @@ jobs:
             -e KSU_SUSFS_OPEN_REDIRECT \
             -e KSU_SUSFS_SUS_MAP \
             -e KSU_MULTI_MANAGER_SUPPORT \
-            -e BUILD_ARM64_DT_OVERLAY \
-            -e KALLSYMS \
-            -e KALLSYMS_ALL
+            -e BUILD_ARM64_DT_OVERLAY
 
-        # 同步 .config 依赖树
+        # 4. 同步 .config 依赖树（通知构建系统参数已就绪）
         make $MAKE_ARGS silentoldconfig
 
-        # 执行满载并行内核编译
+        # 5. 执行满载并行内核编译
         make $MAKE_ARGS -j$(nproc --all)
+
 
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
