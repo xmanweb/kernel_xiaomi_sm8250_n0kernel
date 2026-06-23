@@ -154,8 +154,8 @@ jobs:
         monitor_diff "include/linux/seccomp.h" "Final Check - seccomp Hook"
         echo "====== Final Audit Complete ======"
 
-          - name: Build Kernel
-        run: |
+    - name: Build Kernel
+      run: |
           cd $GITHUB_WORKSPACE
           
           # 1. 修复静态符号检查（ReSukiSU）限制
