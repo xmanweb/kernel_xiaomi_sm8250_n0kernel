@@ -42,11 +42,11 @@ FILE_MMU="fs/proc/task_mmu.c"
 if [ -f "$FILE_MMU" ]; then
     echo "📝 正在修复: $FILE_MMU"
 
-    # Hunk #1: 头部添加头文件
+    # Hunk #1: 换用 pagewalk.h 确保 100% 成功插入原 patch 的 susfs_def.h
     if ! grep -q "susfs_def.h" "$FILE_MMU"; then
-        sed -i '/#include <linux\/ctype.h>/a \
+        sed -i '/#include <linux\/pagewalk.h>/a \
 #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif \/\/ #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)' "$FILE_MMU"
-        echo "  - 头文件添加成功"
+        echo "  - 头文件 susfs_def.h 添加成功"
     fi
 
     # Hunk #8: pagemap_read 逻辑注入
