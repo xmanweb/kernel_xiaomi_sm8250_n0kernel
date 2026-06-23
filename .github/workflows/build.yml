@@ -158,7 +158,7 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         
-        # 1. 精准将交叉编译链的 bin 目录加入全局环境 PATH 中
+        # 1. 精准将 ZyC-Clang 16 编译链的 bin 目录加入全局环境 PATH 中
         if [ -d "$GITHUB_WORKSPACE/toolchain/zyc-clang/bin" ]; then
           REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang/bin"
         else
@@ -166,8 +166,18 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 精细解耦 Target 与 Host 工具链，彻底断绝参数交叉污染
-        # 【核心修正】：移除一刀切的 LLVM=1，手动指派 Target 用 Clang，Host 用 GCC
+        # =====================================================================
+        # 【坚持使用 ZyC-Clang 16 破局补丁】
+        # 告诉 ZyC-Clang 16 在编译这个属于内核构建工具一部分的空文件时改用 -O0 优化级别。
+        # 这能完美避开 Clang 16 后端寄存器分析引擎的内核级 Bug，
+        # 同时 100% 确保其余所有内核模块继续由 ZyC-Clang 16 进行全优化编译！
+        # =====================================================================
+        if [ -f "scripts/mod/Makefile" ]; then
+          echo "Applying regalloc crash bypass patch to scripts/mod/Makefile for ZyC-Clang..."
+          echo "CFLAGS_empty.o := -O0" >> scripts/mod/Makefile
+        fi
+
+        # 2. 规范标准的现代高级交叉编译调用传参（严格锁定 CC=clang 走你下载的编译链）
         export MAKE_ARGS="ARCH=arm64 \
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -177,13 +187,12 @@ jobs:
                           NM=llvm-nm \
                           OBJCOPY=llvm-objcopy \
                           OBJDUMP=llvm-objdump \
-                          STRIP=llvm-strip"
-          
-        # 3. 显式在命令行中死锁主机编译器为 GCC/G++
-        export HOST_ARGS="HOSTCC=gcc HOSTCXX=g++"
+                          STRIP=llvm-strip \
+                          LLVM=1 \
+                          LLVM_IAS=1"
 
         # 生成原始高通配置
-        make O=out $MAKE_ARGS $HOST_ARGS vendor/umi_defconfig
+        make O=out $MAKE_ARGS vendor/umi_defconfig
         
         # 注入 KSU 和 SUSFS 必要扩展
         ./scripts/config --file out/.config \
@@ -203,10 +212,10 @@ jobs:
             -e BUILD_ARM64_DT_OVERLAY
 
         # 同步 .config 依赖树
-        make O=out $MAKE_ARGS $HOST_ARGS silentoldconfig
+        make O=out $MAKE_ARGS silentoldconfig
 
-        # 执行满载并行内核编译（带上双重环境隔离参数）
-        make O=out $MAKE_ARGS $HOST_ARGS -j$(nproc --all)
+        # 执行满载并行内核编译，全程由 ZyC-Clang 16 深度掌控
+        make O=out $MAKE_ARGS -j$(nproc --all)
 
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
