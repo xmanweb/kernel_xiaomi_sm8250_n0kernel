@@ -1,4 +1,4 @@
-name: Build Xiaomi SM8250 Kernel with Pure ReSukiSU & Simonpunk SUSFS v2.1.0
+name: Build Xiaomi SM8250 Kernel with ReSukiSU & SUSFS
 
 on:
   push:
@@ -167,17 +167,17 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # =====================================================================
-        # 【坚持使用 ZyC-Clang 16 破局补丁】
-        # 告诉 ZyC-Clang 16 在编译这个属于内核构建工具一部分的空文件时改用 -O0 优化级别。
-        # 这能完美避开 Clang 16 后端寄存器分析引擎的内核级 Bug，
-        # 同时 100% 确保其余所有内核模块继续由 ZyC-Clang 16 进行全优化编译！
+        # 【ZyC-Clang 16 核心破局补丁 v2】
+        # 强制将 scripts/mod 下所有由 Target 编译器生成的中间文件（empty.o 和 devicetable-offsets.s）
+        # 的优化级别全部降级为 -O0。彻底根除 Clang 16 寄存器分配引擎的崩溃死穴！
         # =====================================================================
         if [ -f "scripts/mod/Makefile" ]; then
-          echo "Applying regalloc crash bypass patch to scripts/mod/Makefile for ZyC-Clang..."
+          echo "Applying comprehensive regalloc crash bypass patch to scripts/mod/Makefile..."
           echo "CFLAGS_empty.o := -O0" >> scripts/mod/Makefile
+          echo "CFLAGS_devicetable-offsets.o := -O0" >> scripts/mod/Makefile
         fi
 
-        # 2. 规范标准的现代高级交叉编译调用传参（严格锁定 CC=clang 走你下载的编译链）
+        # 2. 严格锁定全套 LLVM 工具链走 ZyC-Clang 16
         export MAKE_ARGS="ARCH=arm64 \
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -214,7 +214,7 @@ jobs:
         # 同步 .config 依赖树
         make O=out $MAKE_ARGS silentoldconfig
 
-        # 执行满载并行内核编译，全程由 ZyC-Clang 16 深度掌控
+        # 执行满载并行内核编译
         make O=out $MAKE_ARGS -j$(nproc --all)
 
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
