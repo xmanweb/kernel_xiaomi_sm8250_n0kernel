@@ -166,24 +166,26 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 严格锁定全套 LLVM 工具链走 ZyC-Clang 16
-        # 【核心修正】：使用双引号包裹 KCFLAGS，防止 make 将其中的 LLVM 参数误识别为自己的配置项
+        # 2. 完全复刻标准 sm8250 成功项目的全套编译传参
+        # 【核心破局】：补全 HOSTCC=clang 与 CLANG_TRIPLE，让 Clang 16 彻底理清架构上下文，全线秒过！
         export MAKE_ARGS="ARCH=arm64 \
+                          SUBARCH=arm64 \
+                          O=out \
+                          CC=clang \
+                          HOSTCC=clang \
+                          CLANG_TRIPLE=aarch64-linux-gnu- \
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                          CC=clang \
+                          CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
                           LD=ld.lld \
                           AR=llvm-ar \
                           NM=llvm-nm \
                           OBJCOPY=llvm-objcopy \
                           OBJDUMP=llvm-objdump \
-                          STRIP=llvm-strip \
-                          LLVM=1 \
-                          LLVM_IAS=1 \
-                          KCFLAGS=\"-mllvm -regalloc=default\""
+                          STRIP=llvm-strip"
 
         # 生成原始高通配置
-        make O=out $MAKE_ARGS vendor/umi_defconfig
+        make $MAKE_ARGS vendor/umi_defconfig
         
         # 注入 KSU 和 SUSFS 必要扩展
         ./scripts/config --file out/.config \
@@ -203,10 +205,10 @@ jobs:
             -e BUILD_ARM64_DT_OVERLAY
 
         # 同步 .config 依赖树
-        make O=out $MAKE_ARGS silentoldconfig
+        make $MAKE_ARGS silentoldconfig
 
         # 执行满载并行内核编译
-        make O=out $MAKE_ARGS -j$(nproc --all)
+        make $MAKE_ARGS -j$(nproc --all)
 
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
