@@ -166,36 +166,17 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # =====================================================================
-        # 【全自动通用破局补丁 v4】
-        # 针对 vdso 分支：不能用 -O0，否则会导致内联失败触发 dynamic relocations 报错。
-        # 方案：使用 -O2 保留内联，但追加后端参数锁死分配器，既有优化又不会崩溃！
-        # =====================================================================
-        if [ -f "scripts/mod/Makefile" ]; then
-          echo "Globally bypassing regalloc for scripts/mod..."
-          sed -i '1i\subdir-ccflags-y := -O0\nCFLAGS_empty.o := -O0\nCFLAGS_devicetable-offsets.o := -O0' scripts/mod/Makefile
-        fi
-
-        if [ -f "Kbuild" ]; then
-          echo "Globally bypassing regalloc for Kbuild prepare stage..."
-          sed -i '1i\CFLAGS_bounds.o := -O0\nCFLAGS_asm-offsets.o := -O0' Kbuild
-        fi
-
-        if [ -f "arch/arm64/kernel/vdso/Makefile" ]; then
-          echo "Bypassing regalloc while maintaining inlining for vdso..."
-          # 在顶部注入：允许优化以消除外部 memcpy 链接，但限制后端分配器的深度分析行为
-          sed -i '1i\subdir-ccflags-y := -O2 -mllvm -regalloc=fast\nCFLAGS_vgettimeofday.o := -O2 -mllvm -regalloc=fast' arch/arm64/kernel/vdso/Makefile
-        fi
-
-        # 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
+        # 2. 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
         echo "Removing unsupported Clang options..."
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 2. 锁定全套标准 sm8250 编译参数
+        # 3. 锁定全套标准 sm8250 编译参数
+        # 【核心破局】：在 CC 后面直接追加 '-mllvm -regalloc=fast'，以最高命令行变量级别强行锁死分配器！
+        # 这样无论内核 Makefile 内部怎么瞎折腾优化级别，Clang 后端永远不会死锁崩溃！
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
-                          CC=clang \
+                          CC='clang -mllvm -regalloc=fast' \
                           HOSTCC=clang \
                           CLANG_TRIPLE=aarch64-linux-gnu- \
                           CROSS_COMPILE=aarch64-linux-gnu- \
