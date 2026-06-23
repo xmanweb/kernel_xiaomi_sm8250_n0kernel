@@ -166,11 +166,15 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
+        # 2. 【精准降维打击】：直接剔除顶层 Makefile 里导致 Clang 16 崩溃的机器学习分配参数
+        echo "Patching top-level Makefile to fix Clang 16 regalloc crash..."
+        sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
+        
+        # 3. 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
         echo "Removing unsupported Clang options..."
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 3. 锁定全套标准 sm8250 编译参数
+        # 4. 锁定全套标准 sm8250 编译参数
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
@@ -186,9 +190,6 @@ jobs:
                           OBJCOPY=llvm-objcopy \
                           OBJDUMP=llvm-objdump \
                           STRIP=llvm-strip"
-
-        # 【核心破局】：通过全局环境变量注入 Clang 后端参数，锁死寄存器分配器，杜绝 make 误解析
-        export KCFLAGS="-mllvm -regalloc=fast"
 
         # 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
