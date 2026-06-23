@@ -209,7 +209,9 @@ jobs:
             -e KSU_SUSFS_OPEN_REDIRECT \
             -e KSU_SUSFS_SUS_MAP \
             -e KSU_MULTI_MANAGER_SUPPORT \
-            -e BUILD_ARM64_DT_OVERLAY
+            -e BUILD_ARM64_DT_OVERLAY \
+            -e CONFIG_KALLSYMS \
+            -e CONFIG_KALLSYMS_ALL
 
         # 同步 .config 依赖树
         make $MAKE_ARGS silentoldconfig
