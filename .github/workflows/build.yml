@@ -158,7 +158,7 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         
-        # 1. 精准将 ZyC-Clang 16 编译链的 bin 目录加入全局环境 PATH 中
+        # 1. 精准将 ZyC-Clang 16 编译链的 bin 目录加入全局 environment PATH 中
         if [ -d "$GITHUB_WORKSPACE/toolchain/zyc-clang/bin" ]; then
           REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang/bin"
         else
@@ -167,9 +167,10 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # =====================================================================
-        # 【全自动通用破局补丁 v2】
-        # 1. 压制准备阶段过渡文件的 regalloc 崩溃。
-        # 2. 全局剔除 Clang 16 在 aarch64 架构下不支持的 '-fsplit-machine-functions' 刺头参数！
+        # 【全自动通用破局补丁 v3】
+        # 1. 压制 scripts/mod 编译期 regalloc 崩溃
+        # 2. 压制 Kbuild 准备阶段与 vdso 子系统的 regalloc 后端死锁
+        # 3. 剔除不支持的编译参数
         # =====================================================================
         if [ -f "scripts/mod/Makefile" ]; then
           echo "Globally bypassing regalloc for scripts/mod..."
@@ -179,6 +180,11 @@ jobs:
         if [ -f "Kbuild" ]; then
           echo "Globally bypassing regalloc for Kbuild prepare stage..."
           sed -i '1i\CFLAGS_bounds.o := -O0\nCFLAGS_asm-offsets.o := -O0' Kbuild
+        fi
+
+        if [ -f "arch/arm64/kernel/vdso/Makefile" ]; then
+          echo "Globally bypassing regalloc for vdso system..."
+          sed -i '1i\subdir-ccflags-y := -O0\nCFLAGS_vgettimeofday.o := -O0' arch/arm64/kernel/vdso/Makefile
         fi
 
         # 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
