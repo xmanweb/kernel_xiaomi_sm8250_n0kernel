@@ -191,14 +191,13 @@ jobs:
                           OBJDUMP=llvm-objdump \
                           STRIP=llvm-strip"
 
-                # 1. 生成原始高通配置
-        make $MAKE_ARGS vendor/umi_defconfig
+        # 1. 【精准强改原始配置】：在生成配置前，把强制通过的要求写入 umi_defconfig 源码（单行安全）
+        echo -e "\nCONFIG_EXPERT=y\nCONFIG_KALLSYMS=y\nCONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/vendor/umi_defconfig
 
-        # 2. 【核心注入】：绕过 Kconfig 自动精简，暴力把参数写死在生成的 .config 末尾
-        echo "CONFIG_KALLSYMS=y" >> out/.config
-        echo "CONFIG_KALLSYMS_ALL=y" >> out/.config
+        # 2. 生成包含 KALLSYMS_ALL 的原始配置
+        make $MAKE_ARGS vendor/umi_defconfig
         
-        # 3. 注入 KSU 和 SUSFS 的其余扩展项（这里依然保留原样）
+        # 3. 注入 KSU 和 SUSFS 的其余扩展项
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -215,7 +214,7 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e BUILD_ARM64_DT_OVERLAY
 
-        # 4. 同步 .config 依赖树（通知构建系统参数已就绪）
+        # 4. 同步 .config 依赖树
         make $MAKE_ARGS silentoldconfig
 
         # 5. 执行满载并行内核编译
