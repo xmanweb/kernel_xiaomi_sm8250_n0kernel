@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     env:
       FINAL_ZIP_NAME: ""
       NO_DTB_ZIP_NAME: ""
@@ -158,7 +158,7 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         
-        # 1. 精准将 ZyC-Clang 16 编译链的 bin 目录加入全局 environment PATH 中
+        # 1. 恢复你最熟悉的 ZyC-Clang 路径动态挂载
         if [ -d "$GITHUB_WORKSPACE/toolchain/zyc-clang/bin" ]; then
           REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang/bin"
         else
@@ -166,21 +166,23 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 【精准降维打击】：直接剔除顶层 Makefile 里导致 Clang 16 崩溃的机器学习分配参数
+        # 2. 精准修复顶层 Makefile 中导致 Clang 16 崩溃的机器学习分配参数
         echo "Patching top-level Makefile to fix Clang 16 regalloc crash..."
         sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
-        
-        # 3. 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
-        echo "Removing unsupported Clang options..."
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 4. 修复静态符号检查（ReSukiSU）强退限制
+        # 3. 【完美复刻老代码】：全盘暴力清洗整个源码树中所有子 Makefile 的不兼容残余参数（防止 camera-cas 翻车）
+        echo "Sweeping all sub-Makefiles for clean optimization arguments..."
+        find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
+        find . -type f -name "Makefile*" -o -name "*.mk" -o -name "*.sh" | xargs sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' 2>/dev/null || true
+
+        # 4. 修复静态符号检查限制
         if [ -f "security/selinux/selinuxfs.c" ]; then
           echo "Removing static prefix from sel_handle_status_ops..."
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
         fi
 
-        # 5. 锁定全套标准、干净的工具链编译参数（复刻成功通关的配置）
+        # 5. 锁定全套标准、干净的工具链编译参数
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
@@ -199,7 +201,7 @@ jobs:
         # 6. 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
         
-        # 7. 注入 KSU 和 SUSFS 的全部核心扩展项
+        # 7. 注入新路线 KSU 和 SUSFS 的全部核心扩展项（包含引发错误的 SUS_MAP）
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -219,10 +221,13 @@ jobs:
         # 8. 同步 .config 依赖树
         make $MAKE_ARGS silentoldconfig
 
-        # 9. 执行满载并行内核编译
-        # 带着完整的 LTO 冲锋，同时通过 --wext 宽容独占指令汇编瑕疵，全面畅通无阻！
-        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" LDFLAGS_vmlinux="--wext" -j$(nproc --all)
+        # 8.5 【终极对冲】：为了吃下 SUS_MAP，强行开启 LSE 硬件级原子指令，让 Clang 别去生成 stlxr 坏汇编
+        echo "Forcing ARM64 LSE Atomics config to wipe out unpredictable STXR codes..."
+        ./scripts/config --file out/.config -e ARM64_LSE_ATOMICS
+        make $MAKE_ARGS silentoldconfig
 
+        # 9. 执行满载并行内核编译（保全全量 LTO）
+        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" -j$(nproc --all)
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
         cd $GITHUB_WORKSPACE
