@@ -167,14 +167,20 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # =====================================================================
-        # 【ZyC-Clang 16 核心破局补丁 v2】
-        # 强制将 scripts/mod 下所有由 Target 编译器生成的中间文件（empty.o 和 devicetable-offsets.s）
-        # 的优化级别全部降级为 -O0。彻底根除 Clang 16 寄存器分配引擎的崩溃死穴！
+        # 【ZyC-Clang 16 核心破局补丁 v3】
+        # 压制 scripts/mod 以及顶级 Kbuild 准备阶段过渡文件的优化级别为 -O0。
+        # 彻底解决 Clang 16 在处理老旧高通内核准备文件时的 LLVM 后端崩溃，
+        # 保证后续主内核核心代码全部采用标准的 ZyC-Clang 16 全优化编译！
         # =====================================================================
         if [ -f "scripts/mod/Makefile" ]; then
-          echo "Applying comprehensive regalloc crash bypass patch to scripts/mod/Makefile..."
+          echo "Applying regalloc crash bypass patch to scripts/mod/Makefile..."
           echo "CFLAGS_empty.o := -O0" >> scripts/mod/Makefile
           echo "CFLAGS_devicetable-offsets.o := -O0" >> scripts/mod/Makefile
+        fi
+
+        if [ -f "Kbuild" ]; then
+          echo "Applying regalloc crash bypass patch to Kbuild..."
+          echo "CFLAGS_bounds.o := -O0" >> Kbuild
         fi
 
         # 2. 严格锁定全套 LLVM 工具链走 ZyC-Clang 16
