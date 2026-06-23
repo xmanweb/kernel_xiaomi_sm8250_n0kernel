@@ -67,10 +67,8 @@ jobs:
         }
 
         # 打印 Phase 1 处理这四个核心文件时的冲突和当前魔改情况
-        audit_phase1 "fs/namespace.c" "fs/namespace.c"
-        audit_phase1 "fs/proc/cmdline.c" "fs/proc/cmdline.c"
+        audit_phase1 "fs/open.c" "fs/open.c"
         audit_phase1 "fs/proc/task_mmu.c" "fs/proc/task_mmu.c"
-        audit_phase1 "kernel/sys.c" "kernel/sys.c"
 
         echo "====================================================================="
         echo "  ✅ [PHASE 1 AUDIT] Rejection Logging Complete. Ready for Rescue."
