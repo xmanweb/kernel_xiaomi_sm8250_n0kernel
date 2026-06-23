@@ -166,31 +166,33 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 精准修复顶层 Makefile 中导致 Clang崩溃的优化参数
+        # 2. 精准修复顶层 Makefile 中导致 Clang 16 崩溃的参数
         echo "Patching top-level Makefile..."
         sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
-        # 3. 【无死角大清洗】：不仅清洗寄存器分配，把高通老代码遗留的机器学习内联（Inline Advisor）也全部抹杀！
-        echo "Sweeping all sub-Makefiles for regalloc-advisor, inline-advisor and unified-lto..."
+        # 3. 【降维打击升级】：不仅全盘清洗可见字符，直接在顶层 Makefile 的最开头，强行把高通的魔改内联/分配变量彻底阉割！
+        # 阻止高通在子 Makefile 里搞动态字符串拼接
+        echo "Forcibly neutralizing Qualcomm advisor variables in top Makefile..."
+        sed -i '1i\LLVM_INLINE_MODE :=\nLLVM_REGALLOC_MODE :=\nTUNING_INLINE_ADVISOR :=\nTUNING_REGALLOC_ADVISOR :=\n' Makefile
+
+        # 4. 全盘暴力清洗所有子 Makefile 里的显式痕迹
+        echo "Sweeping all sub-Makefiles for clean optimization arguments..."
         find . -type f \( -name "Makefile*" -o -name "*.mk" \) | while read -r mk_file; do
-          # 清除 regalloc 机器学习分配
-          sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
-          sed -i -E 's/-regalloc-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
-          # 核心针对：清除引发本次翻车的 Inline 机器学习内联
-          sed -i -E 's/-mllvm -inline-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
-          sed -i -E 's/-inline-(enable|eviction)-advisor=release//g' "$mk_file" 2>/dev/null || true
-          # 清除淘汰的 unified-lto
+          sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
+          sed -i -E 's/-regalloc-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
+          sed -i -E 's/-mllvm -inline-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
+          sed -i -E 's/-inline-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
           sed -i 's/-funified-lto//g' "$mk_file" 2>/dev/null || true
         done
 
-        # 4. 修复静态符号检查限制
+        # 5. 修复静态符号检查限制
         if [ -f "security/selinux/selinuxfs.c" ]; then
           echo "Removing static prefix from sel_handle_status_ops..."
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
         fi
 
-        # 5. 锁定全套标准、干净的工具链编译参数
+        # 6. 锁定全套标准、干净的工具链编译参数
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
@@ -206,10 +208,10 @@ jobs:
                           LLVM=1 \
                           LLVM_IAS=1"
 
-        # 6. 生成原始高通配置
+        # 7. 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
         
-        # 7. 注入 KSU 和 SUSFS 全部核心扩展项
+        # 8. 注入 KSU 和 SUSFS 全部核心扩展项
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -226,18 +228,18 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e BUILD_ARM64_DT_OVERLAY
 
-        # 8. 锁定现代、并行的 ThinLTO 模式
+        # 9. 锁定现代、并行的 ThinLTO 模式
         echo "Switching LTO mode from Full to Thin..."
         ./scripts/config --file out/.config -d LTO_CLANG_FULL
         ./scripts/config --file out/.config -e LTO_CLANG_THIN
 
-        # 9. 同步 .config 依赖树
+        # 10. 同步 .config 依赖树
         make $MAKE_ARGS silentoldconfig
 
-        # 10. 执行满载并行内核编译
-        # 通过 LDFLAGS_vmlinux="-mllvm -inline-advisor=default" 强行覆盖残留的垃圾参数，把死锁的 Advisor 打回原形！
-        echo "Starting kernel compilation with ThinLTO & Advisor Overrides..."
-        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" LDFLAGS_vmlinux="-mllvm -inline-advisor=default" -j$(nproc --all)
+        # 11. 执行满载并行内核编译
+        # 使用更为激进的全局清除策略，在 make 命令行上把底层恶心参数死死按在地上
+        echo "Starting kernel compilation..."
+        make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" LDFLAGS_vmlinux="--error-limit=0" -j$(nproc --all)
         
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
