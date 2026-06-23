@@ -166,8 +166,14 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 统合与精简底层的编译宏参数，使用标准内核交叉编译调用格式
-        # 【修复关键】：移除多余的 HOSTCC=clang 与各种覆盖，完全利用内核自带的交叉判定逻辑
+        # =====================================================================
+        # 【终极强制修复】魔改顶层 Makefile，强制 Host 工具使用系统的 GCC 编译
+        # 从而彻底绕过新版 Clang 编译老内核 scripts/mod/empty.o 时的 LLVM 后端崩溃
+        # =====================================================================
+        sed -i 's/^HOSTCC.*/HOSTCC = gcc/g' Makefile
+        sed -i 's/^HOSTCXX.*/HOSTCXX = g++/g' Makefile
+        
+        # 2. 统合底层的编译宏参数
         export MAKE_ARGS="ARCH=arm64 \
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
