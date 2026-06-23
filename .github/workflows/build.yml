@@ -171,12 +171,10 @@ jobs:
         sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
 
         # 3. 锁定全套标准 sm8250 编译参数
-        # 【核心破局】：在 CC 后面直接追加 '-mllvm -regalloc=fast'，以最高命令行变量级别强行锁死分配器！
-        # 这样无论内核 Makefile 内部怎么瞎折腾优化级别，Clang 后端永远不会死锁崩溃！
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
-                          CC='clang -mllvm -regalloc=fast' \
+                          CC=clang \
                           HOSTCC=clang \
                           CLANG_TRIPLE=aarch64-linux-gnu- \
                           CROSS_COMPILE=aarch64-linux-gnu- \
@@ -188,6 +186,9 @@ jobs:
                           OBJCOPY=llvm-objcopy \
                           OBJDUMP=llvm-objdump \
                           STRIP=llvm-strip"
+
+        # 【核心破局】：通过全局环境变量注入 Clang 后端参数，锁死寄存器分配器，杜绝 make 误解析
+        export KCFLAGS="-mllvm -regalloc=fast"
 
         # 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
