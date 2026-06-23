@@ -154,75 +154,65 @@ jobs:
         monitor_diff "include/linux/seccomp.h" "Final Check - seccomp Hook"
         echo "====== Final Audit Complete ======"
 
-    - name: Build Kernel
-      run: |
-        cd $GITHUB_WORKSPACE
-        
-        # 1. 精准将 ZyC-Clang 16 编译链的 bin 目录加入全局 environment PATH 中
-        if [ -d "$GITHUB_WORKSPACE/toolchain/zyc-clang/bin" ]; then
-          REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang/bin"
-        else
-          REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang"
-        fi
-        export PATH=$REAL_CLANG_PATH:$PATH
-        
-        # 2. 【精准降维打击】：直接剔除顶层 Makefile 里导致 Clang 16 崩溃的机器学习分配参数
-        echo "Patching top-level Makefile to fix Clang 16 regalloc crash..."
-        sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
-        
-        # 3. 暴力剔除高通老 Makefile 遗留的不兼容 Clang 16 优化参数
-        echo "Removing unsupported Clang options..."
-        sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
+          - name: Build Kernel
+        run: |
+          cd $GITHUB_WORKSPACE
+          
+          # 1. 修复静态符号检查（ReSukiSU）限制
+          if [ -f "security/selinux/selinuxfs.c" ]; then
+            echo "Removing static prefix from sel_handle_status_ops..."
+            sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
+          fi
+          
+          # 2. 【核心注入】：将容错参数直接追加到顶层 Makefile 的 LDFLAGS_vmlinux 中
+          # 这样可以完美避开命令行传参导致的 make: invalid option 语法错误
+          if [ -f "Makefile" ]; then
+            echo "Injecting LLVM backend flags into top-level Makefile..."
+            echo 'LDFLAGS_vmlinux += -mllvm -mattr=+no-unpredictable-stxr' >> Makefile
+          fi
 
-                # 强制链接器在 LTO 后端处理时忽略或宽容 unpredictable stxr 检查
-        export MAKE_ARGS="ARCH=arm64 \
-                          SUBARCH=arm64 \
-                          O=out \
-                          CC=clang \
-                          LD=ld.lld \
-                          AR=llvm-ar \
-                          NM=llvm-nm \
-                          OBJCOPY=llvm-objcopy \
-                          OBJDUMP=llvm-objdump \
-                          STRIP=llvm-strip \
-                          CROSS_COMPILE=aarch64-linux-gnu- \
-                          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-                          LLVM=1 \
-                          LLVM_IAS=1 \
-                          LDFLAGS_vmlinux=\"-mllvm -mattr=+no-unpredictable-stxr\""
+          # 3. 锁定全套标准、干净的工具链环境变量
+          export MAKE_ARGS="ARCH=arm64 \
+                            SUBARCH=arm64 \
+                            O=out \
+                            CC=clang \
+                            LD=ld.lld \
+                            AR=llvm-ar \
+                            NM=llvm-nm \
+                            OBJCOPY=llvm-objcopy \
+                            OBJDUMP=llvm-objdump \
+                            STRIP=llvm-strip \
+                            CROSS_COMPILE=aarch64-linux-gnu- \
+                            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+                            LLVM=1 \
+                            LLVM_IAS=1"
 
+          # 4. 生成原始高通配置（此时 LTO 默认处于开启状态）
+          make $MAKE_ARGS vendor/umi_defconfig
+          
+          # 5. 注入 KSU 和 SUSFS 的扩展项
+          ./scripts/config --file out/.config \
+              -e KSU \
+              -e THREAD_INFO_IN_TASK \
+              -e KSU_SUSFS \
+              -e KSU_SUSFS_SUS_PATH \
+              -e KSU_SUSFS_SUS_MOUNT \
+              -e KSU_SUSFS_SUS_KSTAT \
+              -e KSU_SUSFS_SPOOF_UNAME \
+              -e KSU_SUSFS_ENABLE_LOG \
+              -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+              -e KSU_SUSFS_OPEN_REDIRECT \
+              -e KSU_SUSFS_SUS_MAP \
+              -e KSU_MULTI_MANAGER_SUPPORT \
+              -e BUILD_ARM64_DT_OVERLAY
 
-        # 1. 【核心注入】：在编译前，直接用 sed 精准抹去 selinuxfs.c 中该变量的 static 修饰符
-        if [ -f "security/selinux/selinuxfs.c" ]; then
-          echo "Removing static prefix from sel_handle_status_ops..."
-          sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
-        fi
-        
-        # 2. 生成包含 KALLSYMS_ALL 的原始配置
-        make $MAKE_ARGS vendor/umi_defconfig
-        
-        # 3. 注入 KSU 和 SUSFS 的其余扩展项
-        ./scripts/config --file out/.config \
-            -e KSU \
-            -e THREAD_INFO_IN_TASK \
-            -e KSU_SUSFS \
-            -e KSU_SUSFS_SUS_PATH \
-            -e KSU_SUSFS_SUS_MOUNT \
-            -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_SPOOF_UNAME \
-            -e KSU_SUSFS_ENABLE_LOG \
-            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            -e KSU_SUSFS_OPEN_REDIRECT \
-            -e KSU_SUSFS_SUS_MAP \
-            -e KSU_MULTI_MANAGER_SUPPORT \
-            -e BUILD_ARM64_DT_OVERLAY
+          # 6. 同步 .config 依赖树
+          make $MAKE_ARGS silentoldconfig
 
-        # 4. 同步 .config 依赖树
-        make $MAKE_ARGS silentoldconfig
+          # 7. 执行满载并行内核编译（带着完整的 LTO 冲锋）
+          make $MAKE_ARGS -j$(nproc --all)
 
-        # 5. 执行满载并行内核编译
-        make $MAKE_ARGS -j$(nproc --all)
 
 
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
