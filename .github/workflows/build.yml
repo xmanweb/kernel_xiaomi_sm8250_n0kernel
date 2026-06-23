@@ -167,22 +167,13 @@ jobs:
         export PATH=$REAL_CLANG_PATH:$PATH
         
         # =====================================================================
-        # 【ZyC-Clang 16 核心破局补丁 v3】
-        # 压制 scripts/mod 以及顶级 Kbuild 准备阶段过渡文件的优化级别为 -O0。
-        # 彻底解决 Clang 16 在处理老旧高通内核准备文件时的 LLVM 后端崩溃，
-        # 保证后续主内核核心代码全部采用标准的 ZyC-Clang 16 全优化编译！
+        # 【通用终极破局方案】
+        # 直接全局清洗顶层 Makefile，剔除所有可能激怒 Clang 16 寄存器分配器的老旧 LLVM 后端参数。
+        # 这样无需一个一个文件去放行，主 Makefile 干净了，全线都会畅通无阻！
         # =====================================================================
-        if [ -f "scripts/mod/Makefile" ]; then
-          echo "Applying regalloc crash bypass patch to scripts/mod/Makefile..."
-          echo "CFLAGS_empty.o := -O0" >> scripts/mod/Makefile
-          echo "CFLAGS_devicetable-offsets.o := -O0" >> scripts/mod/Makefile
-        fi
-
-        if [ -f "Kbuild" ]; then
-          echo "Applying regalloc crash bypass patch to Kbuild..."
-          echo "CFLAGS_bounds.o := -O0" >> Kbuild
-        fi
-
+        sed -i 's/-mllvm -regalloc=[^ ]*//g' Makefile 2>/dev/null || true
+        sed -i 's/-mllvm -enable-gvn-[^ ]*//g' Makefile 2>/dev/null || true
+        
         # 2. 严格锁定全套 LLVM 工具链走 ZyC-Clang 16
         export MAKE_ARGS="ARCH=arm64 \
                           CROSS_COMPILE=aarch64-linux-gnu- \
