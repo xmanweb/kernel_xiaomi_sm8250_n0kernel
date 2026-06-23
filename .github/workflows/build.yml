@@ -166,18 +166,22 @@ jobs:
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
         
-        # 2. 精准修复顶层 Makefile 中导致 Clang 16 崩溃的参数
-        echo "Patching top-level Makefile..."
-        sed -i 's/-mllvm -regalloc-enable-advisor=release/-mllvm -regalloc=fast/g' Makefile
-        sed -i 's/-fsplit-machine-functions//g' Makefile 2>/dev/null || true
+        # 2. 【精准降维打击】：利用 Copilot 抓出来的罪证，用安全的全局正则彻底干掉顶层 Makefile 里的高通魔改黑货
+        echo "Neutralizing Qualcomm MLGO and Legacy LTO parameters at source via Regex..."
+        # A. 抹除导致 Clang 16 链接器爆 Advisor 错误的 MLGO 机器学习参数
+        sed -i -E 's/.*-mllvm -regalloc-enable-advisor=release.*/# Removed Regalloc MLGO/g' Makefile
+        sed -i -E 's/.*-mllvm -enable-ml-inliner=release.*/# Removed Inline MLGO/g' Makefile
+        sed -i -E 's/.*-mllvm -regalloc-enable-advisor=release//g' Makefile 2>/dev/null || true
+        
+        # B. 抹除导致汇编崩溃的冷热代码分割和不兼容的机器特征分割
+        sed -i -E 's/.*-mllvm -hot-cold-split=true.*/# Removed Hot Cold Split/g' Makefile
+        sed -i -E 's/.*-fsplit-machine-functions.*/# Removed Split Machine Functions/g' Makefile
+        
+        # C. 斩草除根：抹除高通写死在 ThinLTO 里的废弃参数 -funified-lto
+        sed -i 's/-funified-lto//g' Makefile
 
-        # 3. 【降维打击升级】：不仅全盘清洗可见字符，直接在顶层 Makefile 的最开头，强行把高通的魔改内联/分配变量彻底阉割！
-        # 阻止高通在子 Makefile 里搞动态字符串拼接
-        echo "Forcibly neutralizing Qualcomm advisor variables in top Makefile..."
-        sed -i '1i\LLVM_INLINE_MODE :=\nLLVM_REGALLOC_MODE :=\nTUNING_INLINE_ADVISOR :=\nTUNING_REGALLOC_ADVISOR :=\n' Makefile
-
-        # 4. 全盘暴力清洗所有子 Makefile 里的显式痕迹
-        echo "Sweeping all sub-Makefiles for clean optimization arguments..."
+        # 3. 【全盘扫荡】：顺便把所有子 Makefile 里可能残留的动态拼接痕迹洗干净（双重保险）
+        echo "Sweeping all sub-Makefiles for generic protection..."
         find . -type f \( -name "Makefile*" -o -name "*.mk" \) | while read -r mk_file; do
           sed -i -E 's/-mllvm -regalloc-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
           sed -i -E 's/-regalloc-(enable|eviction)-advisor=[a-zA-Z0-9_-]+//g' "$mk_file" 2>/dev/null || true
@@ -186,13 +190,13 @@ jobs:
           sed -i 's/-funified-lto//g' "$mk_file" 2>/dev/null || true
         done
 
-        # 5. 修复静态符号检查限制
+        # 4. 修复静态符号检查限制
         if [ -f "security/selinux/selinuxfs.c" ]; then
           echo "Removing static prefix from sel_handle_status_ops..."
           sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
         fi
 
-        # 6. 锁定全套标准、干净的工具链编译参数
+        # 5. 锁定全套标准、干净的工具链编译参数
         export MAKE_ARGS="ARCH=arm64 \
                           SUBARCH=arm64 \
                           O=out \
@@ -208,10 +212,10 @@ jobs:
                           LLVM=1 \
                           LLVM_IAS=1"
 
-        # 7. 生成原始高通配置
+        # 6. 生成原始高通配置
         make $MAKE_ARGS vendor/umi_defconfig
         
-        # 8. 注入 KSU 和 SUSFS 全部核心扩展项
+        # 7. 注入 KSU 和 SUSFS 全部核心扩展项（包含 SUS_MAP）
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -228,16 +232,15 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e BUILD_ARM64_DT_OVERLAY
 
-        # 9. 锁定现代、并行的 ThinLTO 模式
+        # 8. 锁定现代、并行的 ThinLTO 模式
         echo "Switching LTO mode from Full to Thin..."
         ./scripts/config --file out/.config -d LTO_CLANG_FULL
         ./scripts/config --file out/.config -e LTO_CLANG_THIN
 
-        # 10. 同步 .config 依赖树
+        # 9. 同步 .config 依赖树
         make $MAKE_ARGS silentoldconfig
 
-        # 11. 执行满载并行内核编译
-        # 使用更为激进的全局清除策略，在 make 命令行上把底层恶心参数死死按在地上
+        # 10. 执行满载并行内核编译
         echo "Starting kernel compilation..."
         make $MAKE_ARGS KCFLAGS="-Wno-error=implicit-int -Wno-error=strict-prototypes" LDFLAGS_vmlinux="--error-limit=0" -j$(nproc --all)
         
