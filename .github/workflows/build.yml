@@ -39,7 +39,6 @@ jobs:
         curl -fsSL "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch" -o susfs_to_419.patch
         
         if [ -f "susfs_to_419.patch" ]; then
-          # 允许 patch 失败并生成 .rej 文件供我们打印审查
           patch -p1 < susfs_to_419.patch || echo "Notice: Some hunks failed. Catching rejections below..."
         fi
 
@@ -66,7 +65,6 @@ jobs:
           echo "---------------------------------------------------------------------"
         }
 
-        # 打印 Phase 1 处理这四个核心文件时的冲突和当前魔改情况
         audit_phase1 "fs/open.c" "fs/open.c"
         audit_phase1 "fs/proc/task_mmu.c" "fs/proc/task_mmu.c"
 
@@ -78,11 +76,10 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         
-        # 在执行 rescue_hunks.sh 之前，我们需要主动把上一步的 .rej 文件清理掉，防止干扰后面的编译或后续补丁
-        find . -name "*.rej" -delete
+        # 清理无用的中间状态文件
         find . -name "*.orig" -delete
 
-        # 1. 执行你本地已有的拦截修复脚本
+        # 执行拦截修复脚本
         if [ -f ".github/workflows/rescue_hunks.sh" ]; then
           chmod +x .github/workflows/rescue_hunks.sh
           ./.github/workflows/rescue_hunks.sh
@@ -90,9 +87,11 @@ jobs:
           echo "❌ CRITICAL: rescue_hunks.sh not found!" && exit 1
         fi
 
-        # 2. YML 层的监控与验证审计逻辑（确认 Phase 1.5 结构已被完美修复）
+        # 运行完毕后删除 .rej 避免后续流程产生干扰
+        find . -name "*.rej" -delete
+
         echo "====================================================================="
-        echo "       🔍 [YML AUDIT ENGINE] VERIFYING PHASE 1.5 INTEGRITY CODES"
+        echo "        🔍 [YML AUDIT ENGINE] VERIFYING PHASE 1.5 INTEGRITY CODES"
         echo "====================================================================="
 
         monitor_diff() {
@@ -154,19 +153,38 @@ jobs:
         monitor_diff "drivers/input/input.c" "Final Check - Input Device Hook"
         monitor_diff "include/linux/seccomp.h" "Final Check - seccomp Hook"
         echo "====== Final Audit Complete ======"
-    
+
     - name: Build Kernel
       run: |
         cd $GITHUB_WORKSPACE
+        
+        # 1. 精准将交叉编译链的 bin 目录加入全局环境 PATH 中
         if [ -d "$GITHUB_WORKSPACE/toolchain/zyc-clang/bin" ]; then
           REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang/bin"
         else
           REAL_CLANG_PATH="$GITHUB_WORKSPACE/toolchain/zyc-clang"
         fi
         export PATH=$REAL_CLANG_PATH:$PATH
-          
-        make O=out ARCH=arm64 vendor/umi_defconfig
         
+        # 2. 统合与精简底层的编译宏参数，使用标准内核交叉编译调用格式
+        # 【修复关键】：移除多余的 HOSTCC=clang 与各种覆盖，完全利用内核自带的交叉判定逻辑
+        export MAKE_ARGS="ARCH=arm64 \
+                          CROSS_COMPILE=aarch64-linux-gnu- \
+                          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                          CC=clang \
+                          LD=ld.lld \
+                          AR=llvm-ar \
+                          NM=llvm-nm \
+                          OBJCOPY=llvm-objcopy \
+                          OBJDUMP=llvm-objdump \
+                          STRIP=llvm-strip \
+                          LLVM=1 \
+                          LLVM_IAS=1"
+          
+        # 生成原始高通配置
+        make O=out $MAKE_ARGS vendor/umi_defconfig
+        
+        # 注入 KSU 和 SUSFS 必要扩展
         ./scripts/config --file out/.config \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -183,24 +201,11 @@ jobs:
             -e KSU_MULTI_MANAGER_SUPPORT \
             -e BUILD_ARM64_DT_OVERLAY
 
-        make O=out ARCH=arm64 silentoldconfig
+        # 同步 .config 依赖树
+        make O=out $MAKE_ARGS silentoldconfig
 
-          make -j$(nproc --all) \
-                    ARCH=arm64 \
-                    SUBARCH=arm64 \
-                    O=out \
-                    CC=clang \
-                    HOSTCC=clang \
-                    CLANG_TRIPLE=aarch64-linux-gnu- \
-                    CROSS_COMPILE=aarch64-linux-gnu- \
-                    CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                    CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-                    LD=ld.lld \
-                    AR=llvm-ar \
-                    NM=llvm-nm \
-                    OBJCOPY=llvm-objcopy \
-                    OBJDUMP=llvm-objdump \
-                    STRIP=llvm-strip
+        # 执行满载并行内核编译
+        make O=out $MAKE_ARGS -j$(nproc --all)
 
     - name: Pack Kernel with AnyKernel3 (Dual Output with DTBO)
       run: |
